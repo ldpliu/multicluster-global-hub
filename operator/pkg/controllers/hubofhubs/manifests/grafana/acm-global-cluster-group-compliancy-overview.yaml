@@ -24,7 +24,7 @@ data:
       "editable": true,
       "gnetId": null,
       "graphTooltip": 0,
-      "iteration": 1686645884103,
+      "iteration": 1686711286482,
       "links": [
         {
           "asDropdown": false,
@@ -238,6 +238,8 @@ data:
               "text": "1:10",
               "value": "1:10"
             },
+            "datasource": null,
+            "definition": "select '1:10' as default, '1:$cc';",
             "description": "Top N Non Compliance Values",
             "error": null,
             "hide": 1,
@@ -245,17 +247,13 @@ data:
             "label": "Top",
             "multi": false,
             "name": "top",
-            "options": [
-              {
-                "selected": true,
-                "text": "1:10",
-                "value": "1:10"
-              }
-            ],
-            "query": "1:10",
-            "queryValue": "",
+            "options": [],
+            "query": "select '1:10' as default, '1:$cc';",
+            "refresh": 2,
+            "regex": "",
             "skipUrlSync": false,
-            "type": "custom"
+            "sort": 0,
+            "type": "query"
           },
           {
             "allValue": null,
@@ -300,6 +298,30 @@ data:
             "options": [],
             "query": "SELECT SPLIT_PART('$top', ':', 2);",
             "refresh": 1,
+            "regex": "",
+            "skipUrlSync": false,
+            "sort": 0,
+            "type": "query"
+          },
+          {
+            "allValue": null,
+            "current": {
+              "selected": false,
+              "text": "1",
+              "value": "1"
+            },
+            "datasource": null,
+            "definition": "WITH compcluster as(\n  SELECT DISTINCT cluster_id\n  FROM\n  history.local_compliance ch\n  WHERE\n  $__timeFilter(ch.compliance_date)\n)\nSELECT\n COUNT(DISTINCT payload -> 'metadata' -> 'labels' ->> '$label')\nFROM\n  status.managed_clusters mc\nJOIN\n  compcluster ch \nON\n mc.cluster_id = ch.cluster_id\nWHERE\n  payload -> 'metadata' -> 'labels' ->> '$label' IS NOT NULL;\n",
+            "description": null,
+            "error": null,
+            "hide": 2,
+            "includeAll": false,
+            "label": null,
+            "multi": false,
+            "name": "cc",
+            "options": [],
+            "query": "WITH compcluster as(\n  SELECT DISTINCT cluster_id\n  FROM\n  history.local_compliance ch\n  WHERE\n  $__timeFilter(ch.compliance_date)\n)\nSELECT\n COUNT(DISTINCT payload -> 'metadata' -> 'labels' ->> '$label')\nFROM\n  status.managed_clusters mc\nJOIN\n  compcluster ch \nON\n mc.cluster_id = ch.cluster_id\nWHERE\n  payload -> 'metadata' -> 'labels' ->> '$label' IS NOT NULL;\n",
+            "refresh": 2,
             "regex": "",
             "skipUrlSync": false,
             "sort": 0,
