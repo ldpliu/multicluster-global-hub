@@ -24,7 +24,7 @@ data:
       "editable": true,
       "gnetId": null,
       "graphTooltip": 0,
-      "iteration": 1688360050557,
+      "iteration": 1690362963713,
       "links": [
         {
           "asDropdown": false,
@@ -415,7 +415,7 @@ data:
               {
                 "matcher": {
                   "id": "byName",
-                  "options": "Name"
+                  "options": "Policy"
                 },
                 "properties": [
                   {
@@ -424,7 +424,7 @@ data:
                       {
                         "targetBlank": true,
                         "title": "View What's Changed dashboard for policy \"${__value.text}\"",
-                        "url": "d/5a3a577af7894943aa6e7ca8408502fa/global-hub-whats-changed-policies?orgId=1&from=${__value.time}&var-hub=${__data.fields.Hub}&var-namespace=${__data.fields.Namespace}&var-policy=${__value.text}"
+                        "url": "d/5a3a577af7894943aa6e7ca8408502fa/global-hub-whats-changed-policies?orgId=1&var-hub=${__data.fields.Hub}&var-namespace=${__data.fields.Namespace}&var-policy=${__value.text}"
                       }
                     ]
                   },
@@ -455,6 +455,16 @@ data:
                   {
                     "id": "custom.width",
                     "value": 150
+                  },
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "targetBlank": true,
+                        "title": "Investigate policy \"${__value.text}\"",
+                        "url": "d/pAqtIGj4k/global-hub-investigation-help??orgId=1&from=${__value.time}&to=${__value.time}&var-hub=${__data.fields.Hub}&var-namespace=${__data.fields.Namespace}&var-policy=${__data.fields.Policy}"
+                      }
+                    ]
                   }
                 ]
               },
@@ -466,7 +476,7 @@ data:
                 "properties": [
                   {
                     "id": "custom.width",
-                    "value": 358
+                    "value": 293
                   }
                 ]
               },
@@ -490,7 +500,7 @@ data:
                 "properties": [
                   {
                     "id": "custom.width",
-                    "value": 218
+                    "value": 175
                   }
                 ]
               },
@@ -502,7 +512,7 @@ data:
                 "properties": [
                   {
                     "id": "custom.width",
-                    "value": 189
+                    "value": 192
                   }
                 ]
               },
@@ -514,7 +524,31 @@ data:
                 "properties": [
                   {
                     "id": "custom.width",
-                    "value": 110
+                    "value": 152
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Policy"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 180
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Control"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 354
                   }
                 ]
               }
@@ -538,7 +572,7 @@ data:
               "group": [],
               "metricColumn": "none",
               "rawQuery": true,
-              "rawSql": "WITH data AS (\n  SELECT\n    ch.compliance_date as \"time\",\n    p.policy_name as \"name\",\n    p.payload -> 'metadata' ->> 'namespace' as \"namespace\",\n    p.leaf_hub_name as \"hub\",\n    p.policy_standard as \"standard\",\n    p.policy_category as \"category\",\n    p.policy_control as \"control\",\n    COUNT(CASE WHEN ch.compliance = 'non_compliant' THEN 1 END) AS \"non_compliant\",\n    COUNT(CASE WHEN ch.compliance = 'unknown' THEN 1 END) AS \"unknown\",\n    COUNT(CASE WHEN ch.compliance = 'compliant' THEN 1 END) AS \"compliant\"\n  FROM\n    local_spec.policies p\n  JOIN\n    history.local_compliance ch ON p.policy_id = ch.policy_id\n  WHERE\n    $__timeFilter(ch.compliance_date)\n  AND\n    p.policy_standard IN ($standard) AND p.policy_category IN ($category) AND p.policy_control IN ($control)\n  AND\n    ch.cluster_id IS NOT NULL\n  GROUP BY (ch.compliance_date, p.policy_name,p.payload -> 'metadata' ->> 'namespace', p.policy_standard, p.policy_category, p.policy_control, p.leaf_hub_name)\n),\nres as (\n  SELECT\n    $__timeGroupAlias(time, $__interval),\n    name,\n    namespace,\n    hub,\n    standard,\n    category,\n    control,\n    non_compliant::float / NULLIF((compliant::float + unknown + non_compliant), 0) as \"value\"\n  FROM\n    data\n  WHERE\n    non_compliant > 0\n)\nSELECT\n  *\nFROM\n  res\nORDER BY (time, value) DESC\n",
+              "rawSql": "WITH data AS (\n  SELECT\n    ch.compliance_date as \"time\",\n    p.policy_name as \"policy\",\n    p.payload -> 'metadata' ->> 'namespace' as \"namespace\",\n    p.leaf_hub_name as \"hub\",\n    p.policy_standard as \"standard\",\n    p.policy_category as \"category\",\n    p.policy_control as \"control\",\n    COUNT(CASE WHEN ch.compliance = 'non_compliant' THEN 1 END) AS \"non_compliant\",\n    COUNT(CASE WHEN ch.compliance = 'unknown' THEN 1 END) AS \"unknown\",\n    COUNT(CASE WHEN ch.compliance = 'compliant' THEN 1 END) AS \"compliant\"\n  FROM\n    local_spec.policies p\n  JOIN\n    history.local_compliance ch ON p.policy_id = ch.policy_id\n  WHERE\n    $__timeFilter(ch.compliance_date)\n  AND\n    p.policy_standard IN ($standard) AND p.policy_category IN ($category) AND p.policy_control IN ($control)\n  AND\n    ch.cluster_id IS NOT NULL\n  GROUP BY (ch.compliance_date, p.policy_name,p.payload -> 'metadata' ->> 'namespace', p.policy_standard, p.policy_category, p.policy_control, p.leaf_hub_name)\n),\nres as (\n  SELECT\n    time,\n    policy,\n    namespace,\n    hub,\n    standard,\n    category,\n    control,\n    non_compliant::float / NULLIF((compliant::float + unknown + non_compliant), 0) as \"value\"\n  FROM\n    data\n  WHERE\n    non_compliant > 0\n)\nSELECT\n  *\nFROM\n  res\nORDER BY (time, value) DESC\n",
               "refId": "A",
               "select": [
                 [
@@ -565,14 +599,21 @@ data:
             {
               "id": "organize",
               "options": {
-                "excludeByName": {},
+                "excludeByName": {
+                  "chdata": false,
+                  "time": false
+                },
                 "indexByName": {},
                 "renameByName": {
                   "category": "Category",
+                  "chdata": "Timevar",
+                  "chdate": "Time",
                   "control": "Control",
                   "hub": "Hub",
                   "name": "Name",
                   "namespace": "Namespace",
+                  "nextday": "Nextday",
+                  "policy": "Policy",
                   "severity": "Severity",
                   "standard": "Standard",
                   "time": "Time",
@@ -625,7 +666,7 @@ data:
                   {
                     "matcher": {
                       "id": "byName",
-                      "options": "Name"
+                      "options": "Policy"
                     },
                     "properties": [
                       {
@@ -675,24 +716,12 @@ data:
                   {
                     "matcher": {
                       "id": "byName",
-                      "options": "Time"
-                    },
-                    "properties": [
-                      {
-                        "id": "custom.width",
-                        "value": 195
-                      }
-                    ]
-                  },
-                  {
-                    "matcher": {
-                      "id": "byName",
                       "options": "Namespace"
                     },
                     "properties": [
                       {
                         "id": "custom.width",
-                        "value": 216
+                        "value": 179
                       }
                     ]
                   },
@@ -704,7 +733,7 @@ data:
                     "properties": [
                       {
                         "id": "custom.width",
-                        "value": 115
+                        "value": 148
                       }
                     ]
                   },
@@ -716,7 +745,7 @@ data:
                     "properties": [
                       {
                         "id": "custom.width",
-                        "value": 187
+                        "value": 192
                       }
                     ]
                   },
@@ -728,7 +757,43 @@ data:
                     "properties": [
                       {
                         "id": "custom.width",
-                        "value": 270
+                        "value": 304
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "chdata"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 159
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Policy"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 178
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Control"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 350
                       }
                     ]
                   },
@@ -740,7 +805,29 @@ data:
                     "properties": [
                       {
                         "id": "custom.width",
-                        "value": 150
+                        "value": 151
+                      },
+                      {
+                        "id": "links",
+                        "value": [
+                          {
+                            "targetBlank": true,
+                            "title": "Investigate Policy ${__data.fields.Policy}",
+                            "url": "d/pAqtIGj4k/global-hub-investigation-help??orgId=1&from=${__value.time}&to=${__value.time}&var-hub=${__data.fields.Hub}&var-namespace=${__data.fields.Namespace}&var-policy=${__data.fields.Policy}"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Time"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 197
                       }
                     ]
                   }
@@ -754,7 +841,8 @@ data:
               },
               "id": 57,
               "options": {
-                "showHeader": true
+                "showHeader": true,
+                "sortBy": []
               },
               "pluginVersion": "8.5.20",
               "targets": [
@@ -763,7 +851,7 @@ data:
                   "group": [],
                   "metricColumn": "none",
                   "rawQuery": true,
-                  "rawSql": "WITH data AS (\n  SELECT\n    ch.compliance_date as \"time\",\n    p.policy_name as \"name\",\n    p.payload -> 'metadata' ->> 'namespace' as \"namespace\",\n    p.leaf_hub_name as \"hub\",\n    p.policy_standard as \"standard\",\n    p.policy_category as \"category\",\n    p.policy_control as \"control\",\n    COUNT(CASE WHEN ch.compliance = 'non_compliant' THEN 1 END) AS \"non_compliant\",\n    COUNT(CASE WHEN ch.compliance = 'unknown' THEN 1 END) AS \"unknown\",\n    COUNT(CASE WHEN ch.compliance = 'compliant' THEN 1 END) AS \"compliant\"\n  FROM\n    local_spec.policies p\n  JOIN\n    history.local_compliance ch ON p.policy_id = ch.policy_id\n  WHERE\n    $__timeFilter(ch.compliance_date)\n  AND\n    p.policy_standard IN ($standard) AND p.policy_category IN ($category) AND p.policy_control IN ($control)\n  AND\n    ch.cluster_id IS NOT NULL\n  GROUP BY (ch.compliance_date, p.policy_name,p.payload -> 'metadata' ->> 'namespace', p.policy_standard, p.policy_category, p.policy_control, p.leaf_hub_name)\n),\nres as (\n  SELECT\n    $__timeGroupAlias(time, $__interval),\n    name,\n    namespace,\n    hub,\n    standard,\n    category,\n    control,\n    unknown::float / NULLIF((compliant::float + unknown + non_compliant), 0) as \"value\"\n  FROM\n    data\n  WHERE\n    non_compliant = 0 \n  AND\n    unknown > 0\n)\nSELECT\n  *\nFROM\n  res\nORDER BY (time, value) DESC\n",
+                  "rawSql": "WITH data AS (\n  SELECT\n    ch.compliance_date as \"time\",\n    p.policy_name as \"policy\",\n    p.payload -> 'metadata' ->> 'namespace' as \"namespace\",\n    p.leaf_hub_name as \"hub\",\n    p.policy_standard as \"standard\",\n    p.policy_category as \"category\",\n    p.policy_control as \"control\",\n    COUNT(CASE WHEN ch.compliance = 'non_compliant' THEN 1 END) AS \"non_compliant\",\n    COUNT(CASE WHEN ch.compliance = 'unknown' THEN 1 END) AS \"unknown\",\n    COUNT(CASE WHEN ch.compliance = 'compliant' THEN 1 END) AS \"compliant\"\n  FROM\n    local_spec.policies p\n  JOIN\n    history.local_compliance ch ON p.policy_id = ch.policy_id\n  WHERE\n    $__timeFilter(ch.compliance_date)\n  AND\n    p.policy_standard IN ($standard) AND p.policy_category IN ($category) AND p.policy_control IN ($control)\n  AND\n    ch.cluster_id IS NOT NULL\n  GROUP BY (ch.compliance_date, p.policy_name,p.payload -> 'metadata' ->> 'namespace', p.policy_standard, p.policy_category, p.policy_control, p.leaf_hub_name)\n),\nres as (\n  SELECT\n    time,\n    policy,\n    namespace,\n    hub,\n    standard,\n    category,\n    control,\n    unknown::float / NULLIF((compliant::float + unknown + non_compliant), 0) as \"value\"\n  FROM\n    data\n  WHERE\n    non_compliant = 0 \n  AND\n    unknown > 0\n)\nSELECT\n  *\nFROM\n  res\nORDER BY (time, value) DESC\n",
                   "refId": "A",
                   "select": [
                     [
@@ -796,12 +884,13 @@ data:
                       "category": "Category",
                       "control": "Control",
                       "hub": "Hub",
-                      "name": "Name",
+                      "name": "Policy",
                       "namespace": "Namespace",
+                      "policy": "Policy",
                       "severity": "Severity",
                       "standard": "Standard",
                       "time": "Time",
-                      "value": "Status"
+                      "value": "Unknown"
                     }
                   }
                 }
@@ -939,4 +1028,3 @@ data:
 kind: ConfigMap
 metadata:
   name: grafana-dashboard-acm-global-offending-policies
-  namespace: {{.Namespace}}

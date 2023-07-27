@@ -7,7 +7,7 @@ data:
           {
             "builtIn": 1,
             "datasource": "-- Grafana --",
-            "enable": true,
+            "enable": false,
             "hide": true,
             "iconColor": "rgba(0, 211, 255, 1)",
             "name": "Annotations & Alerts",
@@ -24,7 +24,7 @@ data:
       "editable": true,
       "gnetId": null,
       "graphTooltip": 0,
-      "iteration": 1688361576433,
+      "iteration": 1689665451595,
       "links": [
         {
           "asDropdown": false,
@@ -114,7 +114,7 @@ data:
               "group": [],
               "metricColumn": "none",
               "rawQuery": true,
-              "rawSql": "WITH data as (\n  SELECT \n    $__timeGroupAlias(ch.compliance_date, $__interval),\n    mc.cluster_name,\n    CASE WHEN ch.compliance = 'non_compliant' THEN 2\n         WHEN ch.compliance = 'unknown' THEN 1\n         WHEN ch.compliance = 'compliant' THEN 0\n    END AS \"compliance\"\n  FROM\n    history.local_compliance ch\n  INNER JOIN\n    local_spec.policies p ON ch.policy_id = p.policy_id\n  INNER JOIN\n    status.managed_clusters mc ON ch.cluster_id = mc.cluster_id\n  WHERE\n    $__timeFilter(ch.compliance_date)\n  AND\n    policy_name = '$policy'\n  AND \n    ch.leaf_hub_name = '$hub'\n  AND\n    p.payload -> 'metadata' ->> 'namespace' = '$namespace'\n),\norderclusters as (\n  SELECT\n    cluster_name,\n    ROW_NUMBER () OVER (ORDER BY SUM(compliance) DESC) as row_number\n  FROM\n    data\n  GROUP BY(cluster_name)\n)\nSELECT\n  time,\n  dc.cluster_name as \"metric\",\n  compliance as \"value\"\nFROM\n  orderclusters tc\nJOIN\n  data dc on dc.cluster_name = tc.cluster_name\nWHERE\n  tc.row_number >= $topleft AND tc.row_number <= $topright\nORDER BY (time)",
+              "rawSql": "WITH data as (\n  SELECT \n    $__timeGroupAlias(ch.compliance_date, $__interval),\n    mc.cluster_name,\n    CASE WHEN ch.compliance = 'non_compliant' THEN 2\n         WHEN ch.compliance = 'unknown' THEN 1\n         WHEN ch.compliance = 'compliant' THEN 0\n    END AS \"compliance\"\n  FROM\n    history.local_compliance ch\n  INNER JOIN\n    local_spec.policies p ON ch.policy_id = p.policy_id\n  INNER JOIN\n    status.managed_clusters mc ON ch.cluster_id = mc.cluster_id\n  WHERE\n    $__timeFilter(ch.compliance_date)\n  AND\n    policy_name = '$policy'\n  AND \n    ch.leaf_hub_name = '$hub'\n  AND\n    p.payload -> 'metadata' ->> 'namespace' = '$namespace'\n  AND\n    mc.cluster_name in ($cluster)\n),\norderclusters as (\n  SELECT\n    cluster_name,\n    ROW_NUMBER () OVER (ORDER BY SUM(compliance) DESC) as row_number\n  FROM\n    data\n  GROUP BY(cluster_name)\n)\nSELECT\n  time,\n  dc.cluster_name as \"metric\",\n  compliance as \"value\"\nFROM\n  orderclusters tc\nJOIN\n  data dc on dc.cluster_name = tc.cluster_name\nWHERE\n  tc.row_number >= $topleft AND tc.row_number <= $topright\nORDER BY (time)",
               "refId": "A",
               "select": [
                 [
@@ -479,7 +479,7 @@ data:
               "group": [],
               "metricColumn": "none",
               "rawQuery": true,
-              "rawSql": "SELECT\n  lp.created_at as \"time\",\n  p.payload -> 'metadata' ->> 'namespace' as namespace,\n  p.policy_name,\n  p.leaf_hub_name as \"hub\",\n  mc.cluster_name,\n  lp.message,\n  lp.reason,\n  lp.compliance\nFROM\n  event.local_policies lp\nINNER JOIN\n  local_spec.policies p ON lp.policy_id = p.policy_id\nINNER JOIN\n  status.managed_clusters mc ON lp.cluster_id = mc.cluster_id\nWHERE\n  $__timeFilter(lp.created_at)\nAND\n  mc.leaf_hub_name = '$hub'\nAND\n  p.policy_name = '$policy'\nAND\n p.payload -> 'metadata' ->> 'namespace' = '$namespace'\nORDER BY (lp.created_at,lp.compliance) DESC",
+              "rawSql": "SELECT\n  lp.created_at as \"time\",\n  p.payload -> 'metadata' ->> 'namespace' as namespace,\n  p.policy_name,\n  p.leaf_hub_name as \"hub\",\n  mc.cluster_name,\n  lp.message,\n  lp.reason,\n  lp.compliance\nFROM\n  event.local_policies lp\nINNER JOIN\n  local_spec.policies p ON lp.policy_id = p.policy_id\nINNER JOIN\n  status.managed_clusters mc ON lp.cluster_id = mc.cluster_id\nWHERE\n  $__timeFilter(lp.created_at)\nAND\n  mc.leaf_hub_name = '$hub'\nAND\n  p.policy_name = '$policy'\nAND\n p.payload -> 'metadata' ->> 'namespace' = '$namespace'\nAND\nmc.cluster_name in ($cluster)\nORDER BY (lp.created_at,lp.compliance) DESC",
               "refId": "A",
               "select": [
                 [
@@ -509,24 +509,24 @@ data:
               "options": {
                 "excludeByName": {},
                 "indexByName": {
-                  "time": 0,
-                  "policy_name": 1,
-                  "namespace": 2,
-                  "hub": 3,
                   "cluster_name": 4,
+                  "compliance": 7,
+                  "hub": 3,
                   "message": 5,
+                  "namespace": 2,
+                  "policy_name": 1,
                   "reason": 6,
-                  "compliance": 7
+                  "time": 0
                 },
                 "renameByName": {
-                  "time": "Time",
-                  "policy_name": "Policy",
-                  "namespace": "Namespace",
-                  "hub": "Hub",
                   "cluster_name": "Cluster",
+                  "compliance": "Compliance",
+                  "hub": "Hub",
                   "message": "Message",
+                  "namespace": "Namespace",
+                  "policy_name": "Policy",
                   "reason": "Reason",
-                  "compliance": "Compliance"
+                  "time": "Time"
                 }
               }
             }
@@ -563,9 +563,9 @@ data:
           {
             "allValue": null,
             "current": {
-              "selected": true,
-              "text": "",
-              "value": ""
+              "selected": false,
+              "text": "leaf-hub-1",
+              "value": "leaf-hub-1"
             },
             "datasource": "${datasource}",
             "definition": "  SELECT DISTINCT leaf_hub_name\n  FROM\n  history.local_compliance ch\n  WHERE\n  $__timeFilter(ch.compliance_date)\n",
@@ -587,9 +587,9 @@ data:
           {
             "allValue": null,
             "current": {
-              "selected": false,
-              "text": "",
-              "value": ""
+              "selected": true,
+              "text": "default",
+              "value": "default"
             },
             "datasource": null,
             "definition": "WITH compcluster as(\n  SELECT DISTINCT policy_id\n  FROM\n  history.local_compliance lc\n  WHERE\n  $__timeFilter(lc.compliance_date)\n  AND\n  leaf_hub_name = '$hub'\n  AND\n  lc.cluster_id IS NOT NULL\n)\nSELECT\n  p.payload -> 'metadata' ->> 'namespace'\nFROM\n  local_spec.policies p\nINNER JOIN\n  compcluster ch ON p.policy_id = ch.policy_id",
@@ -612,8 +612,8 @@ data:
             "allValue": null,
             "current": {
               "selected": false,
-              "text": "",
-              "value": ""
+              "text": "policy-1",
+              "value": "policy-1"
             },
             "datasource": "${datasource}",
             "definition": "WITH compcluster as(\n  SELECT DISTINCT policy_id\n  FROM\n  history.local_compliance lc\n  WHERE\n  $__timeFilter(lc.compliance_date)\n  AND\n  leaf_hub_name = '$hub'\n)\nSELECT\n  policy_name\nFROM\n  local_spec.policies p\nINNER JOIN\n  compcluster ch ON p.policy_id = ch.policy_id\nWHERE\n  p.payload -> 'metadata' ->> 'namespace' = '$namespace'",
@@ -635,7 +635,7 @@ data:
           {
             "allValue": null,
             "current": {
-              "selected": true,
+              "selected": false,
               "text": "1:10",
               "value": "1:10"
             },
@@ -708,8 +708,8 @@ data:
             "allValue": null,
             "current": {
               "selected": false,
-              "text": "",
-              "value": ""
+              "text": "233",
+              "value": "233"
             },
             "datasource": null,
             "definition": "WITH policyid as(\nSELECT\n  DISTINCT policy_id\nFROM\n   local_spec.policies\nWHERE\n leaf_hub_name = '$hub'\nAND\n policy_name = '$policy'\n),\ncompcluster as(\n  SELECT DISTINCT lc.cluster_id\n  FROM\n    history.local_compliance lc\n JOIN\n    policyid pi\n ON\n   pi.policy_id = lc.policy_id\n WHERE\n  $__timeFilter(compliance_date)\n)\nSELECT COUNT(*)\nFROM \ncompcluster;",
@@ -732,8 +732,8 @@ data:
             "allValue": null,
             "current": {
               "selected": false,
-              "text": "",
-              "value": ""
+              "text": "224",
+              "value": "224"
             },
             "datasource": null,
             "definition": "select $maxtop-9",
@@ -755,8 +755,9 @@ data:
           {
             "allValue": null,
             "current": {
+              "isNone": true,
               "selected": false,
-              "text": "",
+              "text": "None",
               "value": ""
             },
             "datasource": null,
@@ -771,6 +772,34 @@ data:
             "options": [],
             "query": "SELECT\n  console_url\nFROM\n  status.leaf_hubs\nwhere\n  leaf_hub_name = '$hub'",
             "refresh": 1,
+            "regex": "",
+            "skipUrlSync": false,
+            "sort": 0,
+            "type": "query"
+          },
+          {
+            "allValue": null,
+            "current": {
+              "selected": true,
+              "text": [
+                "All"
+              ],
+              "value": [
+                "$__all"
+              ]
+            },
+            "datasource": null,
+            "definition": "WITH compcluster as(\n  SELECT DISTINCT cluster_id\n  FROM\n  history.local_compliance\n  WHERE\n  $__timeFilter(compliance_date)\n  AND\n  leaf_hub_name = '$hub'\n)\nSELECT\n  cluster_name\nFROM\n  status.managed_clusters mc\nINNER JOIN\n  compcluster ch ON mc.cluster_id = ch.cluster_id",
+            "description": null,
+            "error": null,
+            "hide": 0,
+            "includeAll": true,
+            "label": "Cluster",
+            "multi": true,
+            "name": "cluster",
+            "options": [],
+            "query": "WITH compcluster as(\n  SELECT DISTINCT cluster_id\n  FROM\n  history.local_compliance\n  WHERE\n  $__timeFilter(compliance_date)\n  AND\n  leaf_hub_name = '$hub'\n)\nSELECT\n  cluster_name\nFROM\n  status.managed_clusters mc\nINNER JOIN\n  compcluster ch ON mc.cluster_id = ch.cluster_id",
+            "refresh": 2,
             "regex": "",
             "skipUrlSync": false,
             "sort": 0,
@@ -791,4 +820,4 @@ data:
 kind: ConfigMap
 metadata:
   name: grafana-dashboard-acm-global-whats-changed-policies
-  namespace: {{.Namespace}}
+

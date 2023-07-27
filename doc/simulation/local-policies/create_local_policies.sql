@@ -3,7 +3,7 @@ $$
 declare
     managed_cluster_template text := '{"apiVersion":"cluster.open-cluster-management.io/v1","kind":"ManagedCluster","metadata":{"annotations":{"open-cluster-management/created-via":"other"},"labels":{"cloud":"Amazon","cluster.open-cluster-management.io/clusterset":"default","feature.open-cluster-management.io/addon-application-manager":"available","feature.open-cluster-management.io/addon-cert-policy-controller":"available","feature.open-cluster-management.io/addon-cluster-proxy":"available","feature.open-cluster-management.io/addon-config-policy-controller":"available","feature.open-cluster-management.io/addon-governance-policy-framework":"available","feature.open-cluster-management.io/addon-iam-policy-controller":"available","feature.open-cluster-management.io/addon-work-manager":"available","name":"cluster1","openshiftVersion":"4.10.36","openshiftVersion-major":"4","openshiftVersion-major-minor":"4.10","vendor":"OpenShift"},"name":"cluster1"},"spec":{"hubAcceptsClient":true,"leaseDurationSeconds":60,"managedClusterClientConfigs":[{"caBundle":"xxxxxx","url":"https://cluster1.example.com:6443"}]}}';
     policy_template text := '{"apiVersion":"policy.open-cluster-management.io/v1","kind":"Policy","metadata":{"uid":"d54ee051-0cbf-4a6c-ba8c-a5ad99acb295","name":"policy-config-audit","namespace":"default","annotations":{"policy.open-cluster-management.io/standards":"policy_standard_template","policy.open-cluster-management.io/categories":"policy_category_template","policy.open-cluster-management.io/controls":"policy_control_template"}},"spec":{"remediationAction":"inform","disabled":false,"policy-templates":[{"objectDefinition":{"apiVersion":"policy.open-cluster-management.io/v1","kind":"ConfigurationPolicy","metadata":{"name":"policy-config-audit"},"spec":{"remediationAction":"inform","severity":"policy_severity_template","object-templates":[{"complianceType":"musthave","objectDefinition":{"apiVersion":"config.openshift.io/v1","kind":"APIServer","metadata":{"name":"cluster"},"spec":{"audit":{"customRules":[{"group":"system:authenticated:oauth","profile":"WriteRequestBodies"},{"group":"system:authenticated","profile":"AllRequestBodies"}]},"profile":"Default"}}}]}}}]}}';
-    all_event_policy text[] := '{"Policy default.policy-config-audit status was updated to Compliant in cluster namespace cluster-config","Policy default.policy-config-audit status was updated to NonCompliant in cluster namespace cluster-config"}';
+    all_event_policy text[] := '{"NonCompliant; violation - limitranges not found: [container-mem-limit-range] in namespace default missing","NonCompliant; violation - namespaces not found: [admin-ns] missing","NonCompliant; violation - roles not found: [view] in namespace default missing"}';
     event_policy_random_index int;
     all_event_root_policy text[] := '{"Policy default/policy-config-audit was propagated for cluster cluster-config/cluster-config","Policy default/policy-config-audit was updated for cluster cluster-config/cluster-config"}';
     all_policy_standards text[] := '{"NIST SP 800-53","NIST-CSF"}';
@@ -14,7 +14,7 @@ declare
     policy_control_random_index int;
     all_policy_severities text[] := '{"low","high"}';
     policy_severity_random_index int;
-    all_compliances local_status.compliance_type[] := '{"compliant","non_compliant"}';
+    all_compliances local_status.compliance_type[] := '{"compliant","non_compliant","unknown"}';
     compliance_random_index int;
     managed_cluster text;
     policy text;
@@ -40,13 +40,13 @@ begin
         raise notice 'hub name %', hub_name;
 
         policy_ids = '{}';
-        for i in 1..30 loop
+        for i in 1..3 loop
             policy_ids  = array_append(policy_ids, uuid_generate_v4());
         end loop;
         raise notice 'policy_ids %', policy_ids;
 
         managed_cluster_ids = '{}';
-        for i in 1..233 loop
+        for i in 1..33 loop
             managed_cluster_ids  = array_append(managed_cluster_ids, uuid_generate_v4());
         end loop;
         raise notice 'managed_cluster_ids %', managed_cluster_ids;
@@ -80,19 +80,19 @@ begin
             managed_cluster_index = managed_cluster_index + 1;
             managed_cluster_name = format('cluster-%s', managed_cluster_index);
             raise notice 'managedcluster name %', managed_cluster_name;
-            SELECT floor(random() * 2 + 1)::int into compliance_random_index;
+            SELECT floor(random() * 3 + 1)::int into compliance_random_index;
             foreach policy_id in array policy_ids loop
                 insert into local_status.compliance (policy_id,cluster_id,cluster_name,leaf_hub_name,compliance,error) VALUES (policy_id,managed_cluster_id,managed_cluster_name,hub_name,all_compliances[compliance_random_index],'none');
             end loop;
         end loop;
 
-        managed_cluster_index = managed_cluster_index - 233;
+        managed_cluster_index = managed_cluster_index - 33;
         foreach managed_cluster_id in array managed_cluster_ids loop
             managed_cluster_index = managed_cluster_index + 1;
             managed_cluster_name = format('cluster-%s', managed_cluster_index);
             raise notice 'event - managedcluster name %', managed_cluster_name;
 
-            policy_index = policy_index - 30;
+            policy_index = policy_index - 3;
             foreach policy_id in array policy_ids loop
                 policy_index = policy_index + 1;
                 policy_name = format('policy-%s', policy_index);
@@ -100,7 +100,7 @@ begin
 
                 count = count + 1;
 
-                SELECT floor(random() * 2 + 1)::int into event_policy_random_index;
+                SELECT floor(random() * 3 + 1)::int into event_policy_random_index;
                 event_message = all_event_policy[event_policy_random_index];
                 event_message = REPLACE(event_message, 'policy-config-audit', policy_name);
                 event_message = REPLACE(event_message, 'cluster-config', managed_cluster_name);
