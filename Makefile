@@ -10,11 +10,11 @@ GO_TEST ?= go test -v
 
 .PHONY: vendor			##download all third party libraries and puts them inside vendor directory
 vendor:
-	@go mod vendor
+	
 
 .PHONY: tidy			
 tidy:
-	@go mod tidy
+	
 
 .PHONY: clean-vendor			##removes third party libraries from vendor directory
 clean-vendor:
