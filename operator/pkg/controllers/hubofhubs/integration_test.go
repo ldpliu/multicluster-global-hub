@@ -480,7 +480,7 @@ var _ = Describe("MulticlusterGlobalHub controller", Ordered, func() {
 			hohConfig := &corev1.ConfigMap{}
 			Eventually(func() bool {
 				err := k8sClient.Get(ctx, types.NamespacedName{
-					Namespace: constants.GHSystemNamespace,
+					Namespace: constants.GHDefaultNamespace,
 					Name:      constants.GHAgentConfigCMName,
 				}, hohConfig)
 				return err == nil
@@ -492,7 +492,7 @@ var _ = Describe("MulticlusterGlobalHub controller", Ordered, func() {
 			By("By checking the multicluster-global-hub-config configmap is recreated")
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Namespace: constants.GHSystemNamespace,
+					Namespace: constants.GHDefaultNamespace,
 					Name:      constants.GHAgentConfigCMName,
 				}, &corev1.ConfigMap{})
 			}, timeout, interval).Should(Succeed())
@@ -704,7 +704,7 @@ var _ = Describe("MulticlusterGlobalHub controller", Ordered, func() {
 			Eventually(func() bool {
 				cm := &corev1.ConfigMap{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
-					Namespace: constants.GHSystemNamespace,
+					Namespace: constants.GHDefaultNamespace,
 					Name:      constants.GHAgentConfigCMName,
 				}, cm)
 				return errors.IsNotFound(err)

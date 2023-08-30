@@ -107,14 +107,14 @@ func TestConsumer(t *testing.T) {
 		t.Errorf("failed to create kubeclient: %v", err)
 	}
 
-	mghSystemNamespace := &v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: constants.GHSystemNamespace}}
-	if err := kubeClient.Create(context.TODO(), mghSystemNamespace); err != nil {
+	mghGHDefaultNamespace := &v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: constants.GHDefaultNamespace}}
+	if err := kubeClient.Create(context.TODO(), mghGHDefaultNamespace); err != nil {
 		t.Errorf("failed to create namespace: %v", err)
 	}
 	mghSystemConfigMap := &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      constants.GHAgentConfigCMName,
-			Namespace: constants.GHSystemNamespace,
+			Namespace: constants.GHDefaultNamespace,
 			Labels:    map[string]string{constants.GlobalHubGlobalResourceLabel: ""},
 		},
 		Data: map[string]string{"aggregationLevel": "full", "enableLocalPolicies": "true"},

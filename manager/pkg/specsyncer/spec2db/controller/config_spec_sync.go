@@ -21,7 +21,7 @@ func AddHubOfHubsConfigController(mgr ctrl.Manager, specDB db.SpecDB) error {
 		For(&corev1.ConfigMap{}).
 		WithEventFilter(GlobalResourcePredicate()).
 		WithEventFilter(predicate.NewPredicateFuncs(func(object client.Object) bool {
-			return object.GetNamespace() == constants.GHSystemNamespace &&
+			return object.GetNamespace() == constants. &&
 				object.GetName() == constants.GHAgentConfigCMName
 		})).
 		Complete(&genericSpecToDBReconciler{

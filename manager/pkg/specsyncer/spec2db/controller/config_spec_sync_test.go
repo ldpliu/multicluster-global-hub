@@ -54,7 +54,7 @@ var _ = Describe("configmaps to database controller", func() {
 		By("Create Namespace for ConfigMap instance")
 		Eventually(func() error {
 			err := kubeClient.Get(ctx, types.NamespacedName{
-				Name: constants.GHSystemNamespace,
+				Name: constants.GHDefaultNamespace,
 			}, &corev1.Namespace{})
 			if err != nil && !errors.IsNotFound(err) {
 				return err
@@ -62,7 +62,7 @@ var _ = Describe("configmaps to database controller", func() {
 			if errors.IsNotFound(err) {
 				if err = kubeClient.Create(ctx, &corev1.Namespace{
 					ObjectMeta: metav1.ObjectMeta{
-						Name: constants.GHSystemNamespace,
+						Name: constants.GHDefaultNamespace,
 					},
 				}); err != nil {
 					return err
@@ -74,7 +74,7 @@ var _ = Describe("configmaps to database controller", func() {
 		By("Create ConfigMap")
 		Eventually(func() error {
 			err := kubeClient.Get(ctx, types.NamespacedName{
-				Namespace: constants.GHSystemNamespace,
+				Namespace: constants.GHDefaultNamespace,
 				Name:      constants.GHAgentConfigCMName,
 			}, &corev1.ConfigMap{})
 			if err != nil && !errors.IsNotFound(err) {
@@ -83,7 +83,7 @@ var _ = Describe("configmaps to database controller", func() {
 			if errors.IsNotFound(err) {
 				if err = kubeClient.Create(ctx, &corev1.ConfigMap{
 					ObjectMeta: metav1.ObjectMeta{
-						Namespace: constants.GHSystemNamespace,
+						Namespace: constants.GHDefaultNamespace,
 						Name:      constants.GHAgentConfigCMName,
 						Labels: map[string]string{
 							constants.GlobalHubOwnerLabelKey:       constants.GHOperatorOwnerLabelVal,
@@ -115,7 +115,7 @@ var _ = Describe("configmaps to database controller", func() {
 					return err
 				}
 				if constants.GHAgentConfigCMName == configMap.Name &&
-					constants.GHSystemNamespace == configMap.Namespace {
+					constants.GHDefaultNamespace == configMap.Namespace {
 					return nil
 				}
 			}

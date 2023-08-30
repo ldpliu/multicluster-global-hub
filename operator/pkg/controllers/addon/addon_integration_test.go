@@ -105,7 +105,7 @@ var _ = Describe("addon integration", Ordered, func() {
 		By("Create global hub configmap instance")
 		expectedHoHConfigMap := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
-				Namespace: constants.GHSystemNamespace,
+				Namespace: constants.GHDefaultNamespace,
 				Name:      constants.GHAgentConfigCMName,
 				Labels: map[string]string{
 					constants.GlobalHubOwnerLabelKey:       constants.GHOperatorOwnerLabelVal,

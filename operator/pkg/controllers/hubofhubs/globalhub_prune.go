@@ -121,7 +121,7 @@ func (r *MulticlusterGlobalHubReconciler) pruneNamespacedResources(ctx context.C
 	existingMghConfigMap := &corev1.ConfigMap{}
 	err := r.Client.Get(ctx,
 		types.NamespacedName{
-			Namespace: constants.GHSystemNamespace,
+			Namespace: constants.GHDefaultNamespace,
 			Name:      constants.GHAgentConfigCMName,
 		}, existingMghConfigMap)
 	if err != nil && !errors.IsNotFound(err) {
@@ -136,19 +136,6 @@ func (r *MulticlusterGlobalHubReconciler) pruneNamespacedResources(ctx context.C
 			return err
 		}
 	}
-
-	mghSystemNamespace := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: constants.GHSystemNamespace,
-			Labels: map[string]string{
-				constants.GlobalHubOwnerLabelKey: constants.GHOperatorOwnerLabelVal,
-			},
-		},
-	}
-	if err := r.Client.Delete(ctx, mghSystemNamespace); err != nil && !errors.IsNotFound(err) {
-		return err
-	}
-
 	mghServiceMonitor := &promv1.ServiceMonitor{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      operatorconstants.GHServiceMonitorName,
