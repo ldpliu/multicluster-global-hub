@@ -13,6 +13,10 @@ spec:
     port: 9443
     protocol: TCP
     targetPort: 9443
+  - name: grafana
+    port: 3001
+    protocol: TCP
+    targetPort: 3001
   selector:
     name: multicluster-global-hub-grafana
   type: ClusterIP

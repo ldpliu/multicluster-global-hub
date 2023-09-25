@@ -3,11 +3,21 @@ package hubofhubs
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	globalhubv1alpha4 "github.com/stolostron/multicluster-global-hub/operator/apis/v1alpha4"
+	"github.com/stolostron/multicluster-global-hub/operator/pkg/config"
+	operatorconstants "github.com/stolostron/multicluster-global-hub/operator/pkg/constants"
+	"github.com/stolostron/multicluster-global-hub/operator/pkg/deployer"
+	"github.com/stolostron/multicluster-global-hub/operator/pkg/renderer"
+	"github.com/stolostron/multicluster-global-hub/operator/pkg/utils"
+	"github.com/stolostron/multicluster-global-hub/pkg/constants"
 	"gopkg.in/ini.v1"
 	"gopkg.in/yaml.v2"
 	corev1 "k8s.io/api/core/v1"
@@ -21,14 +31,6 @@ import (
 	"k8s.io/client-go/restmapper"
 	"k8s.io/klog"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-
-	globalhubv1alpha4 "github.com/stolostron/multicluster-global-hub/operator/apis/v1alpha4"
-	"github.com/stolostron/multicluster-global-hub/operator/pkg/config"
-	operatorconstants "github.com/stolostron/multicluster-global-hub/operator/pkg/constants"
-	"github.com/stolostron/multicluster-global-hub/operator/pkg/deployer"
-	"github.com/stolostron/multicluster-global-hub/operator/pkg/renderer"
-	"github.com/stolostron/multicluster-global-hub/operator/pkg/utils"
-	"github.com/stolostron/multicluster-global-hub/pkg/constants"
 )
 
 const (
@@ -149,10 +151,25 @@ func (r *MulticlusterGlobalHubReconciler) reconcileGrafana(ctx context.Context,
 		return fmt.Errorf("failed to generate grafana init. err:%v", err)
 	}
 
-	if changedAlert || changedGrafanaIni || changedDatasourceSecret {
+	if changedGrafanaIni {
 		err = restartGrafanaPod(ctx, r.KubeClient)
 		if err != nil {
 			return fmt.Errorf("failed to restart grafana pod. err:%v", err)
+		}
+	} else {
+		var reloadResources []string
+		if changedDatasourceSecret {
+			reloadResources = append(reloadResources, "datasources")
+		}
+		if changedAlert {
+			reloadResources = append(reloadResources, "alerting")
+			reloadResources = append(reloadResources, "notifications")
+		}
+		if len(reloadResources) != 0 {
+			err := r.reloadGrafanaResource(ctx, reloadResources)
+			if err != nil {
+				return fmt.Errorf("failed to reload grafana resources: %v. err:%v", reloadResources, err)
+			}
 		}
 	}
 
@@ -420,6 +437,72 @@ func mergeAlertConfigMap(defaultAlertConfigMap, customAlertConfigMap *corev1.Con
 	return &mergedAlertConfigMap, nil
 }
 
+func (r *MulticlusterGlobalHubReconciler) reloadGrafanaResource(ctx context.Context, resources []string) error {
+	configNamespace := config.GetDefaultNamespace()
+	header := map[string]string{
+		"Content-Type":     "application/json",
+		"X-Forwarded-User": "WHAT_YOU_ARE_DOING_IS_VOIDING_SUPPORT_0000000000000000000000000000000000000000000000000000000000000000",
+	}
+	labelSelector := fmt.Sprintf("name=%s", grafanaDeploymentName)
+
+	poList, err := r.KubeClient.CoreV1().Pods(configNamespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	klog.Infof("Reloading grafana resources:%v", resources)
+	for _, po := range poList.Items {
+		for _, resource := range resources {
+			url := "http://" + po.Status.PodIP + ":3001/api/admin/provisioning/" + resource + "/reload"
+			klog.Infof("Sending request: %v", url)
+			_, err := sendRequest("POST", url, header)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func sendRequest(reqType string, url string, header map[string]string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(context.TODO(), reqType, url, nil)
+	if err != nil {
+		klog.Errorf("unable to create request: %v\n", err)
+		return nil, err
+	}
+
+	for headerKey, headValue := range header {
+		req.Header.Add(headerKey, headValue)
+	}
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: true,
+	}
+
+	tr := &http.Transport{TLSClientConfig: tlsConfig}
+
+	client := http.Client{Transport: tr}
+	resp, err := client.Do(req)
+	if err != nil {
+		klog.Errorf("Failed to send request:%v", err)
+		return nil, err
+	}
+
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Response error. %v", resp.Status)
+	}
+	return body, nil
+}
+
 func restartGrafanaPod(ctx context.Context, kubeClient kubernetes.Interface) error {
 	configNamespace := config.GetDefaultNamespace()
 	labelSelector := fmt.Sprintf("name=%s", grafanaDeploymentName)
@@ -433,6 +516,7 @@ func restartGrafanaPod(ctx context.Context, kubeClient kubernetes.Interface) err
 		}
 		return err
 	}
+	klog.Infof("Restarting grafana pod as grafana config changed.")
 	for _, po := range poList.Items {
 		err := kubeClient.CoreV1().Pods(configNamespace).Delete(ctx, po.Name, metav1.DeleteOptions{})
 		if err != nil && !errors.IsNotFound(err) {
