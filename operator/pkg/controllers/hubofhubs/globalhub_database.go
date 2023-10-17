@@ -27,21 +27,21 @@ var databaseOldFS embed.FS
 
 func (r *MulticlusterGlobalHubReconciler) ReconcileDatabase(ctx context.Context,
 	mgh *globalhubv1alpha4.MulticlusterGlobalHub,
-) error {
+) (bool, string, error) {
 	log := r.Log.WithName("database")
-
 	if condition.ContainConditionStatus(mgh, condition.CONDITION_TYPE_DATABASE_INIT, condition.CONDITION_STATUS_TRUE) {
 		log.V(7).Info("database has been initialized, checking the reconcile counter")
 		// if the operator is restarted, reconcile the database again
 		if DatabaseReconcileCounter > 0 {
-			return nil
+			return false, "", nil
 		}
 	}
 
 	conn, err := database.PostgresConnection(ctx, r.MiddlewareConfig.PgConnection.SuperuserDatabaseURI,
 		r.MiddlewareConfig.PgConnection.CACert)
 	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
+		r.Log.Info("connecting to database", "error", err.Error())
+		return true, fmt.Sprintf("connecting to database, error: %v", err.Error()), nil
 	}
 	defer func() {
 		if err := conn.Close(ctx); err != nil {
@@ -56,12 +56,12 @@ func (r *MulticlusterGlobalHubReconciler) ReconcileDatabase(ctx context.Context,
 	readonlyUsername := objURI.User.Username()
 
 	if err := applySQL(ctx, conn, databaseFS, "database", readonlyUsername); err != nil {
-		return err
+		return true, "", err
 	}
 
 	if r.EnableGlobalResource {
 		if err := applySQL(ctx, conn, databaseOldFS, "database.old", readonlyUsername); err != nil {
-			return err
+			return true, "", err
 		}
 	}
 
@@ -69,9 +69,10 @@ func (r *MulticlusterGlobalHubReconciler) ReconcileDatabase(ctx context.Context,
 	DatabaseReconcileCounter++
 	err = condition.SetConditionDatabaseInit(ctx, r.Client, mgh, condition.CONDITION_STATUS_TRUE)
 	if err != nil {
-		return condition.FailToSetConditionError(condition.CONDITION_STATUS_TRUE, err)
+		return true, "", condition.FailToSetConditionError(condition.CONDITION_STATUS_TRUE, err)
 	}
-	return nil
+
+	return false, "", nil
 }
 
 func applySQL(ctx context.Context, conn *pgx.Conn, databaseFS embed.FS, rootDir, username string) error {

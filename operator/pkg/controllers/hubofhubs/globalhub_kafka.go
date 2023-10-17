@@ -135,6 +135,9 @@ func (r *MulticlusterGlobalHubReconciler) WaitForKafkaClusterReady(ctx context.C
 		Namespace: config.GetDefaultNamespace(),
 	}, kafkaCluster)
 	if err != nil {
+		r.Log.Error(err, "Failed to get Kafka cluster",
+			"Namespace", config.GetDefaultNamespace(),
+			"Name", kafka.KafkaClusterName)
 		return nil, err
 	}
 
