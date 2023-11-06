@@ -3,10 +3,8 @@ package dbsyncer
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"github.com/go-logr/logr"
-	"gorm.io/gorm/clause"
 
 	"github.com/stolostron/multicluster-global-hub/pkg/bundle"
 	"github.com/stolostron/multicluster-global-hub/pkg/bundle/helpers"
@@ -18,6 +16,8 @@ import (
 	"github.com/stolostron/multicluster-global-hub/pkg/database"
 	"github.com/stolostron/multicluster-global-hub/pkg/database/models"
 )
+
+var defaultClusterId = "00000000-0000-0000-0000-000000000000"
 
 // NewHubClusterInfoDBSyncer creates a new instance of genericDBSyncer to sync hub cluster info.
 func NewHubClusterInfoDBSyncer(log logr.Logger) DBSyncer {
@@ -81,16 +81,7 @@ func (syncer *hubClusterInfoDBSyncer) handleLocalObjectsBundle(ctx context.Conte
 	logBundleHandlingMessage(syncer.log, bundle, startBundleHandlingMessage)
 	leafHubName := bundle.GetLeafHubName()
 
-	leafHub := &models.LeafHub{}
 	db := database.GetGorm()
-	err := db.Where(&models.LeafHub{
-		LeafHubName: leafHubName,
-	}).Find(leafHub).Error
-	if err != nil {
-		return fmt.Errorf("failed fetching leaf hub '%s.%s' from db - %w", schema, tableName, err)
-	}
-
-	batchLeafhub := []models.LeafHub{}
 	for _, object := range bundle.GetObjects() {
 		specificObj, ok := object.(*status.LeafHubClusterInfo)
 		if !ok {
@@ -101,27 +92,44 @@ func (syncer *hubClusterInfoDBSyncer) handleLocalObjectsBundle(ctx context.Conte
 		if err != nil {
 			return err
 		}
+		existingObjs := []models.LeafHub{}
 
-		// if the row doesn't exist in db then add it.
-		if leafHub.LeafHubName == "" {
-			batchLeafhub = append(batchLeafhub, models.LeafHub{
-				LeafHubName: leafHubName,
-				Payload:     payload,
-			})
-			continue
+		err = db.Where("leaf_hub_name = ?", leafHubName).Find(&existingObjs).Error
+		if err != nil {
+			return err
 		}
-
-		batchLeafhub = append(batchLeafhub, models.LeafHub{
-			LeafHubName: leafHubName,
-			Payload:     payload,
-		})
-	}
-
-	err = db.Clauses(clause.OnConflict{
-		UpdateAll: true,
-	}).CreateInBatches(batchLeafhub, 100).Error
-	if err != nil {
-		return err
+		syncer.log.V(2).Info("Existing objs", "count", len(existingObjs))
+		if len(existingObjs) == 0 {
+			syncer.log.Info("Create LeafHub", "leaf_hub_name", leafHubName, "cluster_id", specificObj.ClusterId)
+			err := db.Create(&models.LeafHub{
+				LeafHubName: leafHubName,
+				ClusterID:   specificObj.ClusterId,
+				Payload:     payload,
+			}).Error
+			return err
+		}
+		for _, existingObj := range existingObjs {
+			syncer.log.V(2).Info("Existing obj", "id", existingObj.ClusterID)
+			if existingObj.ClusterID == defaultClusterId || existingObj.ClusterID == specificObj.ClusterId {
+				err := db.Model(&models.LeafHub{}).
+					Where(&models.LeafHub{
+						ClusterID:   defaultClusterId,
+						LeafHubName: leafHubName,
+					}).
+					Or(&models.LeafHub{
+						LeafHubName: leafHubName,
+						ClusterID:   specificObj.ClusterId,
+					}).
+					Updates(&models.LeafHub{
+						LeafHubName: leafHubName,
+						ClusterID:   specificObj.ClusterId,
+						Payload:     payload,
+					}).Error
+				if err != nil {
+					return err
+				}
+			}
+		}
 	}
 
 	logBundleHandlingMessage(syncer.log, bundle, finishBundleHandlingMessage)

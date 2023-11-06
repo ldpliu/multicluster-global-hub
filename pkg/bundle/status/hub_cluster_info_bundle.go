@@ -2,6 +2,7 @@ package status
 
 // LeafHubClusterInfo manages leaf hub cluster info.
 type LeafHubClusterInfo struct {
+	ClusterId   string `json:"clusterId"`
 	LeafHubName string `json:"leafHubName"`
 	ConsoleURL  string `json:"consoleURL"`
 	GrafanaURL  string `json:"grafanaURL"`

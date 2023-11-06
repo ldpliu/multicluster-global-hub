@@ -9,6 +9,7 @@ import (
 	"github.com/go-logr/logr"
 	routev1 "github.com/openshift/api/route/v1"
 	apiErrors "k8s.io/apimachinery/pkg/api/errors"
+	clustersv1alpha1 "open-cluster-management.io/api/cluster/v1alpha1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -64,28 +65,36 @@ func (c *hubClusterController) Reconcile(ctx context.Context, request ctrl.Reque
 	reqLogger := c.log.WithValues("Request.Namespace", request.Namespace, "Request.Name", request.Name)
 
 	consoleRoute := &routev1.Route{}
-
 	if err := c.client.Get(ctx, request.NamespacedName, consoleRoute); apiErrors.IsNotFound(err) {
 		consoleRoute.Name = request.Name
 		consoleRoute.Namespace = request.Namespace
-		c.syncBundle(ctx, consoleRoute)
+		c.bundle.UpdateObject(consoleRoute)
+		c.syncBundle(ctx)
 		return ctrl.Result{}, nil
 	} else if err != nil {
 		reqLogger.Info(fmt.Sprintf("Reconciliation failed: %s", err))
 		return ctrl.Result{Requeue: true, RequeueAfter: 5 * time.Second},
 			fmt.Errorf("reconciliation failed: %w", err)
 	}
+	c.bundle.UpdateObject(consoleRoute)
 
-	c.syncBundle(ctx, consoleRoute)
+	clusterClaim := &clustersv1alpha1.ClusterClaim{}
+	err := c.client.Get(ctx, client.ObjectKey{Name: "id.k8s.io"}, clusterClaim)
+
+	if err != nil {
+		return ctrl.Result{Requeue: true, RequeueAfter: 5 * time.Second},
+			fmt.Errorf("failed to get cluster - %w", err)
+	}
+	c.bundle.UpdateObject(clusterClaim)
+
+	c.syncBundle(ctx)
 
 	reqLogger.V(2).Info("Reconciliation complete.")
 
 	return ctrl.Result{}, nil
 }
 
-func (c *hubClusterController) syncBundle(ctx context.Context, route *routev1.Route) {
-	c.bundle.UpdateObject(route)
-
+func (c *hubClusterController) syncBundle(ctx context.Context) {
 	payloadBytes, err := json.Marshal(c.bundle)
 	if err != nil {
 		c.log.Error(err, "marshal hub cluster info bundle error", "transportBundleKey", c.transportBundleKey)

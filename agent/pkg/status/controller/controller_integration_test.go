@@ -26,6 +26,7 @@ import (
 	"github.com/stolostron/multicluster-global-hub/pkg/bundle/status"
 	"github.com/stolostron/multicluster-global-hub/pkg/constants"
 	"github.com/stolostron/multicluster-global-hub/pkg/transport"
+	clustersv1alpha1 "open-cluster-management.io/api/cluster/v1alpha1"
 )
 
 var msgIDBundleCreateFuncMap = map[string]status.CreateBundleFunction{
@@ -63,6 +64,7 @@ var _ = Describe("Agent Status Controller", Ordered, func() {
 			},
 			Status: policyv1.PolicyStatus{},
 		}
+
 	})
 
 	It("should be able to sync control-info", func() {
@@ -117,6 +119,15 @@ var _ = Describe("Agent Status Controller", Ordered, func() {
 			},
 		})).Should(Succeed())
 
+		Expect(kubeClient.Create(ctx, &clustersv1alpha1.ClusterClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "id.k8s.io",
+			},
+			Spec: clustersv1alpha1.ClusterClaimSpec{
+				Value: "00000000-0000-0000-0000-000000000001",
+			},
+		})).Should(Succeed())
+
 		By("Check the hub cluster info bundle can be read from cloudevents consumer")
 		Eventually(func() error {
 			message := <-consumer.MessageChan()
@@ -137,6 +148,36 @@ var _ = Describe("Agent Status Controller", Ordered, func() {
 		})).Should(Succeed())
 
 		Expect(kubeClient.Create(ctx, &routev1.Route{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      constants.ObservabilityGrafanaRouteName,
+				Namespace: constants.ObservabilityNamespace,
+			},
+			Spec: routev1.RouteSpec{
+				Host: "grafana-open-cluster-management-observability.apps.test-cluster",
+				To: routev1.RouteTargetReference{
+					Kind: "Service",
+					Name: constants.ObservabilityGrafanaRouteName,
+				},
+			},
+		})).Should(Succeed())
+
+		By("Check the hub cluster info bundle can be read from cloudevents consumer")
+		Eventually(func() error {
+			message := <-consumer.MessageChan()
+
+			statusBundle, err := getStatusBundle(message, constants.HubClusterInfoMsgKey)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("========== received %s with statusBundle: %v\n", message.ID, statusBundle)
+			return nil
+		}, 30*time.Second, 1*time.Second).Should(Succeed())
+	})
+
+	It("should sync hub cluster info when remove grafana url", func() {
+		By("Delete observability grafana route in the managed hub cluster")
+
+		Expect(kubeClient.Delete(ctx, &routev1.Route{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      constants.ObservabilityGrafanaRouteName,
 				Namespace: constants.ObservabilityNamespace,

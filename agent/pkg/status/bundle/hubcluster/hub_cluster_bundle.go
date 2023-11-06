@@ -1,9 +1,11 @@
 package hubcluster
 
 import (
+	"reflect"
 	"sync"
 
 	routev1 "github.com/openshift/api/route/v1"
+	clustersv1alpha1 "open-cluster-management.io/api/cluster/v1alpha1"
 
 	agentbundle "github.com/stolostron/multicluster-global-hub/agent/pkg/status/bundle"
 	statusbundle "github.com/stolostron/multicluster-global-hub/pkg/bundle/status"
@@ -33,36 +35,37 @@ func (bundle *LeafHubClusterInfoStatusBundle) UpdateObject(object agentbundle.Ob
 	bundle.lock.Lock()
 	defer bundle.lock.Unlock()
 
-	var routeURL string
-	route := object.(*routev1.Route)
-	if len(route.Spec.Host) != 0 {
-		routeURL = "https://" + route.Spec.Host
-	}
-
 	if len(bundle.Objects) == 0 {
-		if route.GetName() == constants.OpenShiftConsoleRouteName {
-			bundle.Objects = []*statusbundle.LeafHubClusterInfo{
-				{
-					LeafHubName: bundle.LeafHubName,
-					ConsoleURL:  routeURL,
-				},
-			}
-		} else if route.GetName() == constants.ObservabilityGrafanaRouteName {
-			bundle.Objects = []*statusbundle.LeafHubClusterInfo{
-				{
-					LeafHubName: bundle.LeafHubName,
-					GrafanaURL:  routeURL,
-				},
-			}
+
+		bundle.Objects = []*statusbundle.LeafHubClusterInfo{
+			{
+				LeafHubName: bundle.LeafHubName,
+			},
 		}
-	} else {
+	}
+	var oldObj = *bundle.Objects[0]
+
+	route, ok := object.(*routev1.Route)
+	if ok {
+		var routeURL string
+		if len(route.Spec.Host) != 0 {
+			routeURL = "https://" + route.Spec.Host
+		}
 		if route.GetName() == constants.OpenShiftConsoleRouteName {
 			bundle.Objects[0].ConsoleURL = routeURL
 		} else if route.GetName() == constants.ObservabilityGrafanaRouteName {
 			bundle.Objects[0].GrafanaURL = routeURL
 		}
 	}
-	bundle.BundleVersion.Incr()
+
+	clusterClaim, ok := object.(*clustersv1alpha1.ClusterClaim)
+	if ok && clusterClaim.Name == "id.k8s.io" {
+		bundle.Objects[0].ClusterId = clusterClaim.Spec.Value
+	}
+
+	if !reflect.DeepEqual(oldObj, *bundle.Objects[0]) {
+		bundle.BundleVersion.Incr()
+	}
 }
 
 // DeleteObject function to delete a single object inside a bundle.
