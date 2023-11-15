@@ -154,6 +154,44 @@ var _ = Describe("Apply local policy to the managed clusters", Ordered,
 					}
 					return nil
 				}, 1*time.Minute, 1*time.Second).Should(Succeed())
+
+				By("Verify the local policy events is synchronized to the global hub event.local_policies table")
+				Eventually(func() error {
+					rows, err := postgresConn.Query(context.TODO(),
+						"select policy_id,event_name,leaf_hub_name from event.local_policies")
+					if err != nil {
+						return err
+					}
+					defer rows.Close()
+
+					// policies, if leahfubname check remove the kv
+					for rows.Next() {
+						columnValues, _ := rows.Values()
+						if len(columnValues) <= 0 {
+							return fmt.Errorf("the event.local_policies record is 0")
+						}
+					}
+					return nil
+				}, 3*time.Minute, 1*time.Second).Should(Succeed())
+
+				By("Verify the local policy events is synchronized to the global hub event.local_root_policies table")
+				Eventually(func() error {
+					rows, err := postgresConn.Query(context.TODO(),
+						"select policy_id,event_name,leaf_hub_name from event.local_root_policies")
+					if err != nil {
+						return err
+					}
+					defer rows.Close()
+
+					// policies, if leahfubname check remove the kv
+					for rows.Next() {
+						columnValues, _ := rows.Values()
+						if len(columnValues) <= 0 {
+							return fmt.Errorf("the event.local_root_policies record is 0")
+						}
+					}
+					return nil
+				}, 3*time.Minute, 1*time.Second).Should(Succeed())
 			})
 
 			// no need to add the finalizer to the local policy
