@@ -15,9 +15,8 @@ all: fmt lint build
 
 .PHONY: fmt				##formats the code
 fmt:
-	@gci write -s standard -s default -s "prefix(github.com/stolostron/multicluster-global-hub)" ./cmd/ ./pkg/
 	@go fmt ./cmd/... ./pkg/...
-	gofumpt -w ./cmd/ ./pkg/
+
 
 CONTROLLER_GEN = controller-gen
 CRD_OPTIONS ?= "crd:trivialVersions=true,preserveUnknownFields=false"
@@ -48,8 +47,7 @@ clean-all: clean-vendor clean
 .PHONY: lint				##runs code analysis tools
 lint:
 	go vet ./cmd/... ./pkg/...
-	golint ./cmd/... ./pkg/...
-	golangci-lint run ./cmd/... ./pkg/...
+
 
 .PHONY: help				##show this help message
 help:

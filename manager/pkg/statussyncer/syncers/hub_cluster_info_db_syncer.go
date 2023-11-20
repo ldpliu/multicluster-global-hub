@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 
 	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/types"
+	clusterv1 "open-cluster-management.io/api/cluster/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/stolostron/multicluster-global-hub/pkg/bundle"
 	"github.com/stolostron/multicluster-global-hub/pkg/bundle/helpers"
@@ -20,9 +23,10 @@ import (
 var defaultClusterId = "00000000-0000-0000-0000-000000000000"
 
 // NewHubClusterInfoDBSyncer creates a new instance of genericDBSyncer to sync hub cluster info.
-func NewHubClusterInfoDBSyncer(log logr.Logger) DBSyncer {
+func NewHubClusterInfoDBSyncer(log logr.Logger, client *client.Client) DBSyncer {
 	dbSyncer := &hubClusterInfoDBSyncer{
-		log: log,
+		log:    log,
+		client: client,
 		createHubClusterInfoFunc: func() status.Bundle {
 			return &status.HubClusterInfoBundle{}
 		},
@@ -36,6 +40,7 @@ func NewHubClusterInfoDBSyncer(log logr.Logger) DBSyncer {
 // localSpecPoliciesSyncer implements local objects spec db sync business logic.
 type hubClusterInfoDBSyncer struct {
 	log                      logr.Logger
+	client                   *client.Client
 	createHubClusterInfoFunc status.CreateBundleFunction
 }
 
@@ -87,6 +92,11 @@ func (syncer *hubClusterInfoDBSyncer) handleLocalObjectsBundle(ctx context.Conte
 		if !ok {
 			continue
 		}
+		mc := clusterv1.ManagedCluster{}
+		(*syncer.client).Get(ctx, types.NamespacedName{
+			Namespace: specificObj.LeafHubName,
+			Name:      specificObj.LeafHubName,
+		}, &mc)
 
 		payload, err := json.Marshal(specificObj)
 		if err != nil {

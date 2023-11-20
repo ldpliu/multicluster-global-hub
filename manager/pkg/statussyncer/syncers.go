@@ -56,11 +56,11 @@ func AddStatusSyncers(mgr ctrl.Manager, managerConfig *config.ManagerConfig) (
 		conflationReadyQueue, dbWorkerPool)); err != nil {
 		return nil, fmt.Errorf("failed to add conflation dispatcher to runtime manager: %w", err)
 	}
-
+	client := mgr.GetClient()
 	// register db syncers create bundle functions within transport and handler functions within dispatcher
 	dbSyncers := []dbsyncer.DBSyncer{
 		dbsyncer.NewHubClusterHeartbeatDBSyncer(ctrl.Log.WithName("hub-heartbeat-syncer")),
-		dbsyncer.NewHubClusterInfoDBSyncer(ctrl.Log.WithName("hub-info-syncer")),
+		dbsyncer.NewHubClusterInfoDBSyncer(ctrl.Log.WithName("hub-info-syncer"), &client),
 		dbsyncer.NewManagedClustersDBSyncer(ctrl.Log.WithName("managed-cluster-syncer")),
 		dbsyncer.NewCompliancesDBSyncer(ctrl.Log.WithName("compliances-syncer")),
 		dbsyncer.NewLocalPolicySpecSyncer(ctrl.Log.WithName("local-policy-spec-syncer")),
