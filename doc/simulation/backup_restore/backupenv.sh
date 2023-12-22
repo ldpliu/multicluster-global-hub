@@ -24,13 +24,14 @@ oc delete -f backup/
 oc delete -f backup/globalhub-custom/
 sleep 20
 
+oc create ns open-cluster-management-backup
+
 oc apply -f common/mch.yaml
 oc apply -f common/backup-policy.yaml
 oc apply -f common/mce.yaml
 
-sleep 20
+sleep 200
 
-oc create ns open-cluster-management-backup
 
 oc create secret generic cloud-credentials -n open-cluster-management-backup --from-file cloud=common/credentials-velero
 oc apply -f common/data-protection-app.yaml
