@@ -109,6 +109,13 @@ func (watcher *managedClusterLabelsStatusWatcher) updateDeletedLabelsByManagedCl
 		watcher.log.Error(err, "trimming cycle skipped")
 		return false
 	}
+	db := database.GetGorm()
+	err = database.Lock(db)
+	if err != nil {
+		watcher.log.Error(err, "failed to lock db")
+		return false
+	}
+	defer database.Unlock(db)
 
 	result := true
 	// iterate over entries
@@ -270,8 +277,10 @@ func getLabelsWithoutLeafHubName(ctx context.Context) ([]*spec.ManagedClusterLab
 
 // getLeafHubNameByManagedCluster returns leaf-hub name for a given managed cluster from a specific table.
 func getLeafHubNameByManagedCluster(managedClusterName string) (string, error) {
-	db := database.GetGorm()
 	var leafHubName string
+
+	db := database.GetGorm()
+
 	if err := db.Raw(fmt.Sprintf(`SELECT leaf_hub_name FROM status.%s WHERE 
 		payload->'metadata'->>'name' = ?`, clusterTableName), managedClusterName).Row().Scan(&leafHubName); err != nil {
 		return "", fmt.Errorf("error reading from table status.%s - %w", clusterTableName, err)
@@ -282,6 +291,11 @@ func getLeafHubNameByManagedCluster(managedClusterName string) (string, error) {
 // updateLeafHubNameByClusterName updates leaf hub name for a given managed cluster under optimistic concurrency.
 func updateLeafHubNameByClusterName(readVersion int64, managedClusterName string, leafHubName string) error {
 	db := database.GetGorm()
+	err := database.Lock(db)
+	if err != nil {
+		return err
+	}
+	defer database.Unlock(db)
 	if result := db.Exec(fmt.Sprintf(`UPDATE spec.%s SET updated_at=now(),leaf_hub_name=?,version=? 
 		WHERE managed_cluster_name=? AND version=?`, labelsTableName), leafHubName, readVersion+1,
 		managedClusterName, readVersion); result.Error != nil {

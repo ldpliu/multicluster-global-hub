@@ -9,22 +9,28 @@ import (
 	_ "github.com/lib/pq"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"k8s.io/client-go/util/retry"
+	"k8s.io/klog"
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	"github.com/stolostron/multicluster-global-hub/pkg/constants"
 	"github.com/stolostron/multicluster-global-hub/pkg/utils"
 )
 
 const PostgresDialect = "postgres"
 
 var (
+	IsBackupEnabled bool
+
 	gormDB   *gorm.DB
 	gormOnce sync.Once
 	// Direct database connection.
 	// It is used:
 	// - to setup/close connection because GORM V2 removed gorm.Close()
 	// - to work with pq.CopyIn because connection returned by GORM V2 gorm.DB() in "not the same"
-	sqlDB *sql.DB
-	log   = ctrl.Log.WithName("database-controller")
+	sqlDB    *sql.DB
+	log      = ctrl.Log.WithName("database-controller")
+	sqlDBNew *sql.DB
 )
 
 type DatabaseConfig struct {
@@ -39,37 +45,41 @@ func InitGormInstance(config *DatabaseConfig) error {
 	if config.Dialect != PostgresDialect {
 		return fmt.Errorf("unsupported database dialect: %s", config.Dialect)
 	}
-	urlObj, err := completePostgres(config.URL, config.CaCertPath)
-	if err != nil {
-		return err
-	}
 	gormOnce.Do(func() {
-		sqlDB, err = sql.Open(config.Dialect, urlObj.String())
-		if err != nil {
-			log.Error(err, "failed to open database connection")
-			return
-		}
-		// sqlDB.SetMaxOpenConns(config.PoolSize)
-		gormDB, err = gorm.Open(postgres.New(postgres.Config{
-			Conn:                 sqlDB,
-			PreferSimpleProtocol: true,
-		}), &gorm.Config{
-			PrepareStmt:          false,
-			FullSaveAssociations: false,
-		})
-		if err != nil {
-			log.Error(err, "failed to open gorm connection")
-			return
-		}
-		sqlDB, err = gormDB.DB()
-		if err != nil {
-			log.Error(err, "failed to open gorm connection")
-			return
-		}
+		gormDB, sqlDB, err = NewGormConn(config)
 		fmt.Println("set max connection==============:", config.PoolSize)
 		sqlDB.SetMaxOpenConns(config.PoolSize)
 	})
 	return err
+}
+
+func NewGormConn(config *DatabaseConfig) (*gorm.DB, *sql.DB, error) {
+	var err error
+	if config.Dialect != PostgresDialect {
+		return nil, nil, fmt.Errorf("unsupported database dialect: %s", config.Dialect)
+	}
+	urlObj, err := completePostgres(config.URL, config.CaCertPath)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	sqlDBConn, err := sql.Open(config.Dialect, urlObj.String())
+	if err != nil {
+		log.Error(err, "failed to open database connection")
+		return nil, nil, err
+	}
+	gormDBconn, err := gorm.Open(postgres.New(postgres.Config{
+		Conn:                 sqlDBConn,
+		PreferSimpleProtocol: true,
+	}), &gorm.Config{
+		PrepareStmt:          false,
+		FullSaveAssociations: false,
+	})
+	if err != nil {
+		log.Error(err, "failed to open gorm connection")
+		return nil, nil, err
+	}
+	return gormDBconn, sqlDBConn, nil
 }
 
 func GetGorm() *gorm.DB {
@@ -80,10 +90,48 @@ func GetGorm() *gorm.DB {
 	return gormDB
 }
 
+func GetSqlDb() *sql.DB {
+	if sqlDB == nil {
+		log.Error(nil, "sqlDb connection is not initialized")
+		return nil
+	}
+	return sqlDB
+}
+
+func Lock(gormConn *gorm.DB) error {
+	if !IsBackupEnabled {
+		return nil
+	}
+	log.V(2).Info("Add db lock")
+	defer log.V(2).Info("db locked")
+	return gormConn.Exec("select pg_advisory_lock(?)", constants.LockId).Error
+}
+
+func Unlock(gormConn *gorm.DB) {
+	if !IsBackupEnabled {
+		return
+	}
+	log.V(2).Info("unlock db")
+	defer log.V(2).Info("db unlocked")
+	err := retry.OnError(retry.DefaultRetry, func(err error) bool {
+		if err != nil {
+			klog.V(2).Infof("unlock failed, retry unlock. err: %s", err)
+			return true
+		}
+		return false
+	},
+		func() error {
+			return gormConn.Exec("select pg_advisory_unlock(?)", constants.LockId).Error
+		})
+	if err != nil {
+		log.Error(err, "Failed to unlock db")
+	}
+}
+
 // Close the sql.DB connection
-func CloseGorm() {
-	if sqlDB != nil {
-		err := sqlDB.Close()
+func CloseGorm(sqlConn *sql.DB) {
+	if sqlConn != nil {
+		err := sqlConn.Close()
 		if err != nil {
 			log.Error(err, "failed to close database connection")
 		}

@@ -29,7 +29,6 @@ import (
 	operatorsv1 "github.com/operator-framework/operator-lifecycle-manager/pkg/package-server/apis/operators/v1"
 	promv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	mchv1 "github.com/stolostron/multiclusterhub-operator/api/v1"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	addonv1alpha1 "open-cluster-management.io/api/addon/v1alpha1"
@@ -50,20 +49,21 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	globalhubv1alpha4 "github.com/stolostron/multicluster-global-hub/operator/apis/v1alpha4"
-	backupcontrollers "github.com/stolostron/multicluster-global-hub/operator/pkg/controllers/backup"
+	"github.com/stolostron/multicluster-global-hub/operator/pkg/controllers/backup"
 )
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
 var (
-	cfg           *rest.Config
-	k8sClient     client.Client // You'll be using this client in your tests.
-	kubeClient    *kubernetes.Clientset
-	testEnv       *envtest.Environment
-	ctx           context.Context
-	cancel        context.CancelFunc
-	testNamespace = "default"
+	cfg              *rest.Config
+	k8sClient        client.Client // You'll be using this client in your tests.
+	testEnv          *envtest.Environment
+	ctx              context.Context
+	cancel           context.CancelFunc
+	testNamespace    = "default"
+	log              = ctrl.Log.WithName("backup-reconciler")
+	backupReconciler *backup.BackupReconciler
 )
 
 func TestControllers(t *testing.T) {
@@ -134,22 +134,15 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).ToNot(HaveOccurred())
 
-	kubeClient, err = kubernetes.NewForConfig(k8sManager.GetConfig())
-	Expect(err).ToNot(HaveOccurred())
-
-	backupReconciler := &backupcontrollers.BackupReconciler{
-		Manager: k8sManager,
-		Client:  k8sManager.GetClient(),
-		Log:     ctrl.Log.WithName("backup-reconciler"),
-	}
+	backupReconciler = backup.NewBackupReconciler(k8sManager, log)
 	Expect(backupReconciler.SetupWithManager(k8sManager)).ToNot(HaveOccurred())
 
 	go func() {
 		defer GinkgoRecover()
-
 		err = k8sManager.Start(ctx)
 		Expect(err).ToNot(HaveOccurred(), "failed to run manager")
 	}()
+	Expect(k8sManager.GetCache().WaitForCacheSync(ctx)).To(BeTrue())
 })
 
 var _ = AfterSuite(func() {

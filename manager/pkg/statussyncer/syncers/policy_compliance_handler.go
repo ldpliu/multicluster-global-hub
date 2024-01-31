@@ -37,7 +37,7 @@ func (syncer *CompliancesDBSyncer) handleComplianceBundle(ctx context.Context,
 	// policyID: { compliance: (cluster1, cluster2), nonCompliance: (cluster3, cluster4), unknowns: (cluster5) }
 	allPolicyClusterSetsFromDB := convertStatusComplianceToClusterSets(compliancesFromDB)
 
-	err = db.Transaction(func(tx *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
 		for _, object := range bundle.GetObjects() { // every object is clusters list per policy with full state
 			clustersPerPolicyFromBundle, ok := object.(*base.GenericCompliance)
 			if !ok {
@@ -81,8 +81,7 @@ func (syncer *CompliancesDBSyncer) handleComplianceBundle(ctx context.Context,
 				if !ok {
 					continue
 				}
-				err := tx.Where(&models.StatusCompliance{
-					LeafHubName: leafHubName,
+				err := tx.Where(&models.StatusCompliance{LeafHubName: leafHubName,
 					PolicyID:    clustersPerPolicyFromBundle.PolicyID,
 					ClusterName: clusterName,
 				}).Delete(&models.StatusCompliance{}).Error
@@ -96,9 +95,8 @@ func (syncer *CompliancesDBSyncer) handleComplianceBundle(ctx context.Context,
 
 		// remove policies that were not sent in the bundle
 		for policyID := range allPolicyClusterSetsFromDB {
-			err := tx.Where(&models.StatusCompliance{
-				PolicyID: policyID,
-			}).Delete(&models.StatusCompliance{}).Error
+			err := tx.Where(&models.StatusCompliance{PolicyID: policyID}).
+				Delete(&models.StatusCompliance{}).Error
 			if err != nil {
 				return fmt.Errorf(failedBatchFormat, err)
 			}
@@ -106,11 +104,6 @@ func (syncer *CompliancesDBSyncer) handleComplianceBundle(ctx context.Context,
 		// return nil will commit the whole transaction
 		return nil
 	})
-	if err != nil {
-		return fmt.Errorf("failed to handle clusters per policy bundle - %w", err)
-	}
-	logBundleHandlingMessage(syncer.log, bundle, finishBundleHandlingMessage)
-	return nil
 }
 
 // policyID: { compliance: (cluster1, cluster2), nonCompliance: (cluster3, cluster4), unknowns: (cluster5) }
@@ -180,7 +173,7 @@ func (syncer *CompliancesDBSyncer) handleCompleteComplianceBundle(ctx context.Co
 
 	allPolicyComplianceRowsFromDB := convertStatusComplianceToClusterSets(nonCompliancesFromDB)
 
-	err = db.Transaction(func(tx *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
 		for _, object := range bundle.GetObjects() { // every object in bundle is policy compliance status
 			policyComplianceStatus, ok := object.(*base.GenericCompleteCompliance)
 			if !ok {
@@ -246,13 +239,6 @@ func (syncer *CompliancesDBSyncer) handleCompleteComplianceBundle(ctx context.Co
 		// return nil will commit the whole transaction
 		return nil
 	})
-
-	if err != nil {
-		return fmt.Errorf("failed to handle complete compliance bundle - %w", err)
-	}
-
-	logBundleHandlingMessage(syncer.log, bundle, finishBundleHandlingMessage)
-	return nil
 }
 
 func updateStatusCompliance(tx *gorm.DB, policyID string, leafHubName string, clusterName string,
