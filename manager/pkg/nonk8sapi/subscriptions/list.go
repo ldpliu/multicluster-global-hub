@@ -163,6 +163,7 @@ func doHandleRowsForWatch(ctx context.Context, writer io.Writer, subscriptionLis
 	preAddedSubscriptions set.Set,
 ) {
 	db := database.GetGorm()
+
 	rows, err := db.Raw(subscriptionListQuery).Rows()
 	if err != nil {
 		fmt.Fprintf(gin.DefaultWriter, "error in quering subscription list: %v\n", err)
@@ -230,6 +231,7 @@ func handleRows(ginCtx *gin.Context, subscriptionListQuery, lastSubscriptionQuer
 	customResourceColumnDefinitions []apiextensionsv1.CustomResourceColumnDefinition,
 ) {
 	db := database.GetGorm()
+
 	lastSubscription := &appsv1.Subscription{}
 	var payload []byte
 	err := db.Raw(lastSubscriptionQuery).Row().Scan(&payload)

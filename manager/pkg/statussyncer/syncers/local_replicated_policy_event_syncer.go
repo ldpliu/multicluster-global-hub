@@ -106,7 +106,13 @@ func (syncer *localPoliciesStatusEventSyncer) handleLocalObjectsBundle(ctx conte
 	}
 
 	db := database.GetGorm()
-	err := db.Clauses(clause.OnConflict{
+
+	err := database.Lock(db)
+	if err != nil {
+		return err
+	}
+	defer database.Unlock(db)
+	err = db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "event_name"}, {Name: "count"}, {Name: "created_at"}},
 		DoNothing: true,
 	}).CreateInBatches(batchUpsertLocalPolicyEvents, 100).Error

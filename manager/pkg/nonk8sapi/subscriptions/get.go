@@ -103,6 +103,7 @@ func getAggregatedSubscriptionReport(subscriptionID, subscriptionQuery,
 	var subscriptionReport *appsv1alpha1.SubscriptionReport
 	var subName, subNamespace string
 	db := database.GetGorm()
+
 	err := db.Raw(subscriptionQuery, subscriptionID).Row().Scan(&subName, &subNamespace)
 	if err != nil {
 		fmt.Fprintf(gin.DefaultWriter, "error in querying subscription with subscription ID(%s): %v\n", subscriptionID, err)

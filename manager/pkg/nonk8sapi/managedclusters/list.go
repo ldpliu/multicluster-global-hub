@@ -175,6 +175,7 @@ func doHandleRowsForWatch(ctx context.Context, writer io.Writer, managedClusterL
 	preAddedManagedClusterNames set.Set,
 ) {
 	db := database.GetGorm()
+
 	rows, err := db.Raw(managedClusterListQuery).Rows()
 	if err != nil {
 		fmt.Fprintf(gin.DefaultWriter, "error in quering managed cluster list: %v\n", err)
@@ -244,11 +245,18 @@ func handleRows(ginCtx *gin.Context, managedClusterListQuery, lastManagedCluster
 ) {
 	db := database.GetGorm()
 
+	err := database.Lock(db)
+	if err != nil {
+		fmt.Fprintf(gin.DefaultWriter, "failed to get db lock: %v\n", err)
+		return
+	}
+	defer database.Unlock(db)
+
 	// load the lastManaged cluster
 	lastManagedCluster := &clusterv1.ManagedCluster{}
 
 	var payload []byte
-	err := db.Raw(lastManagedClusterQuery).Row().Scan(&payload)
+	err = db.Raw(lastManagedClusterQuery).Row().Scan(&payload)
 	if err != nil && err != sql.ErrNoRows {
 		ginCtx.String(http.StatusInternalServerError, serverInternalErrorMsg)
 		fmt.Fprintf(gin.DefaultWriter, "error in querying row: %v\n", err)

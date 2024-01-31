@@ -44,7 +44,6 @@ var _ = Describe("HubClusterHeartbeatSyncer", Ordered, func() {
 		By("Check the leaf hubs table")
 		Eventually(func() error {
 			db := database.GetGorm()
-
 			heartbeats := []models.LeafHubHeartbeat{}
 			ret := db.Find(&heartbeats)
 			if ret.Error != nil {

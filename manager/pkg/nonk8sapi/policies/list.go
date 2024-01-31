@@ -187,6 +187,7 @@ func doHandlePoliciesForWatch(ctx context.Context, writer gin.ResponseWriter,
 		fmt.Fprintf(gin.DefaultWriter, QueryPolicyMappingFailureFormatMsg, err)
 	}
 	db := database.GetGorm()
+
 	policyRows, err := db.Raw(policyListQuery).Rows()
 	if err != nil {
 		fmt.Fprintf(gin.DefaultWriter, QueryPoliciesFailureFormatMsg, err)
@@ -297,6 +298,7 @@ func handlePolicies(ginCtx *gin.Context, policyListQuery, lastPolicyQuery,
 	customResourceColumnDefinitions []apiextensionsv1.CustomResourceColumnDefinition,
 ) {
 	db := database.GetGorm()
+
 	lastPolicy := &policyv1.Policy{}
 	lastPolicyID := ""
 	var lastPolicyPayload []byte
@@ -443,7 +445,6 @@ func getComplianceStatus(policyComplianceQuery, policyID string,
 ) ([]*policyv1.CompliancePerClusterStatus, bool, error) {
 	compliancePerClusterStatuses := []*policyv1.CompliancePerClusterStatus{}
 	hasNonCompliantClusters := false
-
 	db := database.GetGorm()
 	var statusCompliances []models.StatusCompliance
 	err := db.Where(&models.StatusCompliance{

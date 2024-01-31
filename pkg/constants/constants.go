@@ -35,6 +35,9 @@ const (
 	BackupExcludeKey      = "velero.io/exclude-from-backup"
 	BackupActivationValue = "cluster-activation"
 	BackupGlobalHubValue  = "globalhub"
+	BackupPvcHook         = "cluster.open-cluster-management.io/backup-pvc-hook"
+	BackupPvcLastHookName = "cluster.open-cluster-management.io/backup-last-sync-name"
+	BackupPvcLastSchedule = "cluster.open-cluster-management.io/backup-last-schedule"
 
 	PostgresPvcLabelKey   = "component"
 	PostgresPvcLabelValue = "multicluster-global-hub-operator"

@@ -67,6 +67,12 @@ func (syncer *ManagedClustersDBSyncer) handleManagedClustersBundle(ctx context.C
 	leafHubName := bundle.GetLeafHubName()
 
 	db := database.GetGorm()
+
+	err := database.Lock(db)
+	if err != nil {
+		return err
+	}
+	defer database.Unlock(db)
 	clusterIdToVersionMapFromDB, err := getClusterIdToVersionMap(db, leafHubName)
 	if err != nil {
 		return fmt.Errorf("failed fetching leaf hub managed clusters from db - %w", err)

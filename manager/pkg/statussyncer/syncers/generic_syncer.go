@@ -68,6 +68,12 @@ func (syncer *genericStatusSyncer) handleResourcesBundle(ctx context.Context, bu
 	leafHubName := bundle.GetLeafHubName()
 
 	db := database.GetGorm()
+
+	err := database.Lock(db)
+	if err != nil {
+		return err
+	}
+	defer database.Unlock(db)
 	genericDao := dao.NewGenericDao(db, fmt.Sprintf("%s.%s", syncer.dbSchema, syncer.dbTableName))
 	idToVersionMapFromDB, err := genericDao.GetIdToVersionByHub(leafHubName)
 	if err != nil {

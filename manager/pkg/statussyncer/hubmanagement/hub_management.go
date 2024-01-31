@@ -68,7 +68,11 @@ func (h *hubManagement) Start(ctx context.Context) error {
 func (h *hubManagement) update(ctx context.Context) error {
 	thresholdTime := time.Now().Add(-h.activeTimeout)
 	db := database.GetGorm()
-
+	err := database.Lock(db)
+	if err != nil {
+		return err
+	}
+	defer database.Unlock(db)
 	var expiredHubs []models.LeafHubHeartbeat
 	if err := db.Where("last_timestamp < ? AND status = ?", thresholdTime, HubActive).
 		Find(&expiredHubs).Error; err != nil {
@@ -108,6 +112,11 @@ func (h *hubManagement) inactive(ctx context.Context, hubs []models.LeafHubHeart
 
 func (h *hubManagement) cleanup(hubName string) error {
 	db := database.GetGorm()
+	err := database.Lock(db)
+	if err != nil {
+		return err
+	}
+	defer database.Unlock(db)
 	return db.Transaction(func(tx *gorm.DB) error {
 		// soft delete the cluster
 		e := tx.Where(&models.ManagedCluster{
@@ -147,6 +156,11 @@ func (h *hubManagement) cleanup(hubName string) error {
 func (h *hubManagement) reactive(ctx context.Context, hubs []models.LeafHubHeartbeat, thresholdTime time.Time) error {
 	// resync hub resources
 	db := database.GetGorm()
+	err := database.Lock(db)
+	if err != nil {
+		return err
+	}
+	defer database.Unlock(db)
 	for _, hub := range hubs {
 		err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 5*time.Minute, true,
 			func(ctx context.Context) (bool, error) {

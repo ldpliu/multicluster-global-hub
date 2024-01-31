@@ -76,9 +76,15 @@ func (syncer *hubClusterInfoDBSyncer) handleLocalObjectsBundle(ctx context.Conte
 	existingObjs := []models.LeafHub{}
 	db := database.GetGorm()
 
+	err := database.Lock(db)
+	if err != nil {
+		return err
+	}
+	defer database.Unlock(db)
+
 	// We use gorm soft delete: https://gorm.io/gen/delete.html#Soft-Delete
 	// So, the db query will not get deleted leafhubs, then we could use leafhub name to identy the unique leafhub
-	err := db.Where(&models.LeafHub{
+	err = db.Where(&models.LeafHub{
 		LeafHubName: leafHubName,
 	}).Find(&existingObjs).Error
 	if err != nil {

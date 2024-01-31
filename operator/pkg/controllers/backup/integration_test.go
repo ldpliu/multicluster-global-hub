@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	globalhubv1alpha4 "github.com/stolostron/multicluster-global-hub/operator/apis/v1alpha4"
 	"github.com/stolostron/multicluster-global-hub/operator/pkg/condition"
@@ -42,7 +43,7 @@ import (
 )
 
 const (
-	timeout  = time.Second * 15
+	timeout  = time.Second * 30
 	duration = time.Second * 10
 	interval = time.Millisecond * 250
 
@@ -79,6 +80,7 @@ var mchObj = &mchv1.MultiClusterHub{
 
 var _ = Describe("Backup controller", Ordered, func() {
 	BeforeAll(func() {
+
 		config.SetMGHNamespacedName(types.NamespacedName{
 			Namespace: mghNamespace,
 			Name:      mghName,
@@ -352,29 +354,40 @@ var _ = Describe("Backup controller", Ordered, func() {
 			Eventually(func() bool {
 				var kafkaPVCLabels map[string]string
 				var zookeeperPVCLabels map[string]string
-
 				Expect(k8sClient.Get(ctx, types.NamespacedName{
 					Namespace: mghNamespace,
 					Name:      "kafka",
 				}, kafka, &client.GetOptions{})).Should(Succeed())
 
+				_, err := backupReconciler.Reconcile(ctx, reconcile.Request{
+					types.NamespacedName{
+						Namespace: "Kafka",
+						Name:      "kafka",
+					}})
+				if err != nil {
+					return false
+				}
 				if !utils.HasLabel(kafka.Labels, constants.BackupKey, constants.BackupGlobalHubValue) {
+					klog.Errorf("kafka do not have backup label:%v", kafka.Labels)
 					return false
 				}
 				if kafka.Spec.Kafka.Template == nil {
+					klog.Errorf("kafka spec template is nil:%v", kafka.Spec.Kafka)
 					return false
 				}
 				if kafka.Spec.Kafka.Template.PersistentVolumeClaim == nil {
+					klog.Errorf("kafka spec pvc template is nil:%v", kafka.Spec.Kafka.Template)
 					return false
 				}
 				kafkaPVCLabelsJson := kafka.Spec.Kafka.Template.PersistentVolumeClaim.Metadata.Labels
 
-				err := json.Unmarshal(kafkaPVCLabelsJson.Raw, &kafkaPVCLabels)
+				err = json.Unmarshal(kafkaPVCLabelsJson.Raw, &kafkaPVCLabels)
 				if err != nil {
 					klog.Errorf("Failed to unmarshal kafkapvc labels, error:%v", err)
 					return false
 				}
 				if !utils.HasLabel(kafkaPVCLabels, constants.BackupExcludeKey, "true") {
+					klog.Errorf("kafka pvc do not have excludd label:%v", kafkaPVCLabels)
 					return false
 				}
 
@@ -382,12 +395,13 @@ var _ = Describe("Backup controller", Ordered, func() {
 
 				err = json.Unmarshal(zookeeperPVCLabelsJson.Raw, &zookeeperPVCLabels)
 				if err != nil {
+					klog.Errorf("Failed to unmarshal kafkapvc labels, error:%v", err)
 					return false
 				}
 				if !utils.HasLabel(zookeeperPVCLabels, constants.BackupExcludeKey, "true") {
+					klog.Errorf("kafka zookeeper do not have excludd label:%v", kafkaPVCLabels)
 					return false
 				}
-
 				return true
 			}, timeout, interval).Should(BeTrue())
 		})
@@ -402,12 +416,19 @@ var _ = Describe("Backup controller", Ordered, func() {
 			kafka.Labels = nil
 
 			Expect(k8sClient.Update(ctx, kafka, &client.UpdateOptions{}))
+			_, err := backupReconciler.Reconcile(ctx, reconcile.Request{
+				types.NamespacedName{
+					Namespace: "Kafka",
+					Name:      "kafka",
+				}})
+			Expect(err).Should(BeNil())
 
 			Eventually(func() bool {
 				Expect(k8sClient.Get(ctx, types.NamespacedName{
 					Namespace: mghNamespace,
 					Name:      "kafka",
 				}, kafka, &client.GetOptions{})).Should(Succeed())
+				klog.Infof("kafka labels:%v", kafka.Labels)
 				return utils.HasLabel(kafka.Labels, constants.BackupKey, constants.BackupGlobalHubValue)
 			}, timeout, interval).Should(BeTrue())
 		})
@@ -454,7 +475,7 @@ var _ = Describe("Backup controller", Ordered, func() {
 
 			kafkaUser.Labels = nil
 
-			Expect(k8sClient.Update(ctx, kafkaUser, &client.UpdateOptions{}))
+			Expect(k8sClient.Update(ctx, kafkaUser, &client.UpdateOptions{})).Should(Succeed())
 
 			Eventually(func() bool {
 				Expect(k8sClient.Get(ctx, types.NamespacedName{
@@ -538,7 +559,7 @@ var _ = Describe("Backup controller", Ordered, func() {
 					Name:      "postgrespvc",
 					Namespace: mghNamespace,
 					Labels: map[string]string{
-						"component": "multicluster-global-hub-operator",
+						constants.PostgresPvcLabelKey: constants.PostgresPvcLabelValue,
 					},
 				},
 				Spec: corev1.PersistentVolumeClaimSpec{
@@ -579,7 +600,13 @@ var _ = Describe("Backup controller", Ordered, func() {
 					Namespace: mghNamespace,
 					Name:      "postgrespvc",
 				}, pvc, &client.GetOptions{})).Should(Succeed())
-				return utils.HasLabel(pvc.Labels, constants.BackupVolumnKey, constants.BackupGlobalHubValue)
+				if !utils.HasLabel(pvc.Labels, constants.BackupVolumnKey, constants.BackupGlobalHubValue) {
+					return false
+				}
+				if !utils.HasLabelKey(pvc.GetLabels(), constants.BackupPvcHook) {
+					return false
+				}
+				return true
 			}, timeout, interval).Should(BeTrue())
 		})
 

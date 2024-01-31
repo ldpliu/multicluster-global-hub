@@ -89,7 +89,8 @@ func (s *GlobalHubJobScheduler) Start(ctx context.Context) error {
 func (s *GlobalHubJobScheduler) execJobs(ctx context.Context) error {
 	for _, job := range s.launchImmediatelyJobs {
 		switch job {
-		case task.LocalComplianceTaskName, task.RetentionTaskName:
+		case task.LocalComplianceTaskName,
+			task.RetentionTaskName:
 			s.log.Info("launch the job", "name", job)
 			if err := s.scheduler.RunByTag(job); err != nil {
 				return err

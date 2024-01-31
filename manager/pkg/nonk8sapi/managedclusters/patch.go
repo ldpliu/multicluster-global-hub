@@ -52,6 +52,7 @@ func PatchManagedCluster() gin.HandlerFunc {
 		fmt.Fprintf(gin.DefaultWriter, "patch for cluster with ID: %s\n", clusterID)
 
 		db := database.GetGorm()
+
 		var leafHubName, managedClusterName string
 		if err := db.Raw(`SELECT leaf_hub_name, payload->'metadata'->>'name' FROM status.managed_clusters 
 			WHERE cluster_id = ?`, clusterID).Row().Scan(&leafHubName, &managedClusterName); err != nil {
@@ -108,8 +109,14 @@ func updateLabels(clusterID, leafHubName, managedClusterName string, labelsToAdd
 	}
 	db := database.GetGorm()
 
+	err := database.Lock(db)
+	if err != nil {
+		return err
+	}
+	defer database.Unlock(db)
+
 	managedClusterLabels := []models.ManagedClusterLabel{}
-	err := db.Where(models.ManagedClusterLabel{ID: clusterID}).Find(&managedClusterLabels).Error
+	err = db.Where(models.ManagedClusterLabel{ID: clusterID}).Find(&managedClusterLabels).Error
 	if err != nil && err != gorm.ErrRecordNotFound {
 		return fmt.Errorf("failed to read from managed_clusters_labels: %w", err)
 	}
@@ -188,6 +195,12 @@ func updateRow(clusterID string, labelsToAdd, existLabelsToAdd map[string]string
 	}
 
 	db := database.GetGorm()
+
+	err := database.Lock(db)
+	if err != nil {
+		return err
+	}
+	defer database.Unlock(db)
 	newLabelsToAddPayload, err := json.Marshal(newLabelsToAdd)
 	if err != nil {
 		return err

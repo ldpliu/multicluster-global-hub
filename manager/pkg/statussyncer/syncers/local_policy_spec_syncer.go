@@ -78,6 +78,12 @@ func (syncer *localSpecPoliciesSyncer) handleLocalObjectsBundle(ctx context.Cont
 	leafHubName := bundle.GetLeafHubName()
 
 	db := database.GetGorm()
+
+	err := database.Lock(db)
+	if err != nil {
+		return err
+	}
+	defer database.Unlock(db)
 	policyIdToVersionMapFromDB, err := getPolicyIdToVersionMap(db, leafHubName)
 	if err != nil {
 		return err

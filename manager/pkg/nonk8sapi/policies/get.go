@@ -185,6 +185,7 @@ func queryPolicyStatus(policyID, policyQuery, policyMappingQuery,
 	}
 
 	db := database.GetGorm()
+
 	var payload []byte
 	err = db.Raw(policyQuery, policyID).Row().Scan(&payload)
 	if err != nil {

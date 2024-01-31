@@ -194,7 +194,6 @@ func createPartitionTable(tableName string, date time.Time) error {
 
 func createRetentionData(tableName string, date time.Time) error {
 	var result *gorm.DB
-
 	db := database.GetGorm()
 
 	switch tableName {

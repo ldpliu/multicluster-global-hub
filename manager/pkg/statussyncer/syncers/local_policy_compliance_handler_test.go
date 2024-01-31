@@ -27,6 +27,7 @@ var _ = Describe("Local StatusCompliances", Ordered, func() {
 	It("LocalClustersPerPolicy bundle should pass", func() {
 		By("Add an expired policy to the database")
 		db := database.GetGorm()
+
 		expiredPolicyID := "b8b3e164-377e-4be1-a870-992265f31f7c"
 		err := db.Create(&models.LocalStatusCompliance{
 			PolicyID:    expiredPolicyID,

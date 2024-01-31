@@ -105,6 +105,13 @@ func syncToLocalComplianceHistoryByLocalStatus(ctx context.Context, batchSize in
 	`
 
 	db := database.GetGorm()
+
+	err = database.Lock(db)
+	if err != nil {
+		return totalCount, insertedCount, err
+	}
+	defer database.Unlock(db)
+
 	err = db.Exec(fmt.Sprintf(createViewTemplate, viewName, viewName)).Error
 	if err != nil {
 		return totalCount, insertedCount, err
@@ -180,6 +187,12 @@ func insertToLocalComplianceHistoryByLocalStatus(ctx context.Context, tableName 
 			`
 			}
 			db := database.GetGorm()
+
+			err = database.Lock(db)
+			if err != nil {
+				return false, nil
+			}
+			defer database.Unlock(db)
 			selectInsertSQL := fmt.Sprintf(selectInsertSQLTemplate, interval, tableName, batchSize, offset)
 			result := db.Exec(selectInsertSQL)
 			if result.Error != nil {
@@ -205,6 +218,12 @@ func syncToLocalComplianceHistoryByPolicyEvent(ctx context.Context, batchSize in
 	totalCountStatement := fmt.Sprintf(totalCountSQLTemplate, dateInterval, dateInterval-1)
 
 	db := database.GetGorm()
+
+	err = database.Lock(db)
+	if err != nil {
+		return totalCount, insertedCount, err
+	}
+	defer database.Unlock(db)
 	if err := db.Raw(totalCountStatement).Scan(&totalCount).Error; err != nil {
 		return totalCount, insertedCount, err
 	}
@@ -269,6 +288,12 @@ func insertToLocalComplianceHistoryByPolicyEvent(ctx context.Context, totalCount
 				dateInterval, dateInterval, dateInterval-1)
 
 			db := database.GetGorm()
+
+			err = database.Lock(db)
+			if err != nil {
+				return false, nil
+			}
+			defer database.Unlock(db)
 			result := db.Exec(selectInsertStatement, batchSize, offset)
 			insertError = result.Error
 			if insertError != nil {
@@ -286,6 +311,12 @@ func traceComplianceHistoryLog(ctx context.Context, name string, total, offset, 
 	start time.Time, err error,
 ) error {
 	db := database.GetGorm()
+
+	err = database.Lock(db)
+	if err != nil {
+		return err
+	}
+	defer database.Unlock(db)
 	localComplianceJobLog := &models.LocalComplianceJobLog{
 		Name:     name,
 		StartAt:  start,

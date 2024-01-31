@@ -91,6 +91,7 @@ func syncManagedClusterLabelsBundles(ctx context.Context, producer transport.Pro
 func getUpdatedManagedClusterLabelsBundles(timestamp *time.Time,
 ) (map[string]*spec.ManagedClusterLabelsSpecBundle, error) {
 	db := database.GetGorm()
+
 	// select ManagedClusterLabelsSpec entries information from DB
 	rows, err := db.Raw(fmt.Sprintf(`SELECT * FROM spec.%[1]s WHERE leaf_hub_name IN (SELECT DISTINCT(leaf_hub_name) 
 		from spec.%[1]s WHERE updated_at::timestamp > timestamp '%[2]s') AND leaf_hub_name <> ''`,

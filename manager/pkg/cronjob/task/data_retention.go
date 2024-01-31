@@ -95,6 +95,11 @@ func DataRetention(ctx context.Context, retentionMonth int, job gocron.Job) {
 func updatePartitionTables(tableName string, createTime, deleteTime time.Time) error {
 	db := database.GetGorm()
 
+	err := database.Lock(db)
+	if err != nil {
+		return err
+	}
+	defer database.Unlock(db)
 	// create the partition tables for the next month
 	startTime := time.Date(createTime.Year(), createTime.Month(), 1, 0, 0, 0, 0, createTime.Location())
 	endTime := startTime.AddDate(0, 1, 0)
@@ -122,6 +127,11 @@ func deleteExpiredRecords(tableName string, minDate time.Time) error {
 
 	sql := fmt.Sprintf("DELETE FROM %s WHERE deleted_at < '%s'", tableName, minDate.Format(dateFormat))
 	db := database.GetGorm()
+	err := database.Lock(db)
+	if err != nil {
+		return err
+	}
+	defer database.Unlock(db)
 	if result := db.Exec(sql); result.Error != nil {
 		return fmt.Errorf("failed to delete records before %s from %s: %w",
 			minDate.Format(dateFormat), tableName, result.Error)
@@ -132,6 +142,12 @@ func deleteExpiredRecords(tableName string, minDate time.Time) error {
 
 func traceDataRetentionLog(tableName string, startTime time.Time, err error, partition bool) error {
 	db := database.GetGorm()
+
+	err = database.Lock(db)
+	if err != nil {
+		return err
+	}
+	defer database.Unlock(db)
 	dataRetentionLog := &models.DataRetentionJobLog{
 		Name:    tableName,
 		StartAt: startTime,
@@ -159,6 +175,7 @@ func traceDataRetentionLog(tableName string, startTime time.Time, err error, par
 
 func getMinMaxPartitions(tableName string) (string, string, error) {
 	db := database.GetGorm()
+
 	schemaTable := strings.Split(tableName, ".")
 	if len(schemaTable) != 2 {
 		return "", "", fmt.Errorf("invalid table name: %s", tableName)
@@ -195,6 +212,7 @@ func getMinMaxPartitions(tableName string) (string, string, error) {
 func getMinDeletionTime(tableName string) (time.Time, error) {
 	db := database.GetGorm()
 	minDeletion := &models.Time{}
+
 	result := db.Raw(fmt.Sprintf("SELECT MIN(deleted_at) as time FROM %s", tableName)).Find(minDeletion)
 	if result.Error != nil {
 		return minDeletion.Time, fmt.Errorf("failed to get min deletion time: %w", result.Error)

@@ -57,12 +57,18 @@ func (syncer *hubHeartbeatSyncer) handleLocalObjectsBundleWrapper() func(ctx con
 func handleHeartbeatBundle(ctx context.Context, bundle bundle.ManagerBundle) error {
 	db := database.GetGorm()
 
+	err := database.Lock(db)
+	if err != nil {
+		return err
+	}
+	defer database.Unlock(db)
+
 	heartbeat := models.LeafHubHeartbeat{
 		Name:         bundle.GetLeafHubName(),
 		LastUpdateAt: time.Now(),
 	}
 
-	err := db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&heartbeat).Error
+	err = db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&heartbeat).Error
 	if err != nil {
 		return fmt.Errorf("failed to update heartbeat %v", err)
 	}

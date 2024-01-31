@@ -82,7 +82,7 @@ var _ = Describe("Policy controller", Ordered, func() {
 		Eventually(func() error {
 			db := database.GetGorm()
 			var policies []models.SpecPolicy
-			err := db.Find(&policies).Error
+			err = db.Find(&policies).Error
 			if err != nil {
 				return err
 			}
@@ -119,7 +119,7 @@ var _ = Describe("Policy controller", Ordered, func() {
 		Eventually(func() error {
 			db := database.GetGorm()
 			var policies []models.SpecPolicy
-			err := db.Find(&policies).Error
+			err = db.Find(&policies).Error
 			if err != nil {
 				return err
 			}

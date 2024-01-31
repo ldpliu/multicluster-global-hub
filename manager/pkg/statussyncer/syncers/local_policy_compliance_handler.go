@@ -19,6 +19,12 @@ func (syncer *CompliancesDBSyncer) handleLocalComplianceBundle(ctx context.Conte
 	leafHubName := bundle.GetLeafHubName()
 	db := database.GetGorm()
 
+	err := database.Lock(db)
+	if err != nil {
+		return err
+	}
+	defer database.Unlock(db)
+
 	// policyID: { compliance: (cluster1, cluster2), nonCompliance: (cluster3, cluster4), unknowns: (cluster5) }
 	allPolicyClusterSetsFromDB, err := getAllLocalPolicyClusterSets(db, "leaf_hub_name = ?", leafHubName)
 	if err != nil {
@@ -145,6 +151,12 @@ func (syncer *CompliancesDBSyncer) handleLocalCompleteComplianceBundle(ctx conte
 	logBundleHandlingMessage(syncer.log, bundle, startBundleHandlingMessage)
 	leafHubName := bundle.GetLeafHubName()
 	db := database.GetGorm()
+
+	err := database.Lock(db)
+	if err != nil {
+		return err
+	}
+	defer database.Unlock(db)
 
 	// policyID: { compliance: (cluster1, cluster2), nonCompliance: (cluster3, cluster4), unknowns: (cluster5) }
 	allPolicyComplianceRowsFromDB, err := getAllLocalPolicyClusterSets(db,
