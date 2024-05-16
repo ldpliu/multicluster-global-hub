@@ -78,6 +78,8 @@ spec:
           name: multicluster-global-hub-alerting
         - mountPath: /grafana-dashboards/0/acm-global-overview
           name: grafana-dashboard-acm-global-overview
+        - mountPath: /grafana-dashboards/3/acm-global-managedclusters
+          name: grafana-dashboard-acm-global-managedclusters
         - mountPath: /grafana-dashboards/0/acm-global-cluster-group-compliancy-overview
           name: grafana-dashboard-acm-global-cluster-group-compliancy-overview
         - mountPath: /grafana-dashboards/0/acm-global-policy-group-compliancy-overview
@@ -101,8 +103,10 @@ spec:
           name: grafana-dashboard-acm-strimzi-zookeeper
         {{- end }}
         {{- if .EnablePostgresMetrics }}
-        - mountPath: /grafana-dashboards/2/acm-global-postgres-exporter
-          name: grafana-dashboard-acm-global-postgres-exporter
+        - mountPath: /grafana-dashboards/2/acm-global-postgres-tables
+          name: grafana-dashboard-acm-global-postgres-tables
+        - mountPath: /grafana-dashboards/2/acm-global-postgres
+          name: grafana-dashboard-acm-global-postgres
         {{- end }}
         - mountPath: /etc/grafana
           name: grafana-config
@@ -210,6 +214,10 @@ spec:
           defaultMode: 420
           name: grafana-dashboard-acm-global-overview
         name: grafana-dashboard-acm-global-overview
+      - configMap:
+          defaultMode: 420
+          name: grafana-dashboard-acm-global-managedclusters
+        name: grafana-dashboard-acm-global-managedclusters
       {{- if .EnableKafkaMetrics }}
       - configMap:
           defaultMode: 420
@@ -227,8 +235,12 @@ spec:
       {{- if .EnablePostgresMetrics }}
       - configMap:
           defaultMode: 420
-          name: grafana-dashboard-acm-global-postgres-exporter
-        name: grafana-dashboard-acm-global-postgres-exporter
+          name: grafana-dashboard-acm-global-postgres
+        name: grafana-dashboard-acm-global-postgres
+      - configMap:
+          defaultMode: 420
+          name: grafana-dashboard-acm-global-postgres-tables
+        name: grafana-dashboard-acm-global-postgres-tables
       {{- end }}
       - name: grafana-config
         secret:
