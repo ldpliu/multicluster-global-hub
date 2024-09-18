@@ -13,6 +13,7 @@ import (
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/restmapper"
+	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/stolostron/multicluster-global-hub/operator/api/operator/v1alpha4"
@@ -51,35 +52,42 @@ func NewManagerReconciler(mgr ctrl.Manager, kubeClient kubernetes.Interface, con
 
 func (r *ManagerReconciler) Reconcile(ctx context.Context,
 	mgh *v1alpha4.MulticlusterGlobalHub,
-) error {
+) (bool, error) {
+	klog.Errorf("#######")
 	// generate random session secret for oauth-proxy
 	proxySessionSecret, err := config.GetOauthSessionSecret()
 	if err != nil {
-		return fmt.Errorf("failed to get random session secret for oauth-proxy: %v", err)
+		return true, fmt.Errorf("failed to get random session secret for oauth-proxy: %v", err)
 	}
+	klog.Errorf("#######")
 
 	// create new HoHRenderer and HoHDeployer
 	hohRenderer, hohDeployer := renderer.NewHoHRenderer(fs), deployer.NewHoHDeployer(r.GetClient())
+	klog.Errorf("#######")
 
 	// create discovery client
 	dc, err := discovery.NewDiscoveryClientForConfig(r.Manager.GetConfig())
 	if err != nil {
-		return err
+		return true, err
 	}
+	klog.Errorf("#######")
 
 	// create restmapper for deployer to find GVR
 	mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(dc))
+	klog.Errorf("#######")
 
 	imagePullPolicy := corev1.PullAlways
 	if mgh.Spec.ImagePullPolicy != "" {
 		imagePullPolicy = mgh.Spec.ImagePullPolicy
 	}
-
+	klog.Errorf("#######")
 	// dataRetention should at least be 1 month, otherwise it will deleted the current month partitions and records
 	months, err := commonutils.ParseRetentionMonth(mgh.Spec.DataLayer.Postgres.Retention)
 	if err != nil {
-		return fmt.Errorf("failed to parse month retention: %v", err)
+		return true, fmt.Errorf("failed to parse month retention: %v", err)
 	}
+	klog.Errorf("#######")
+
 	if months < 1 {
 		months = 1
 	}
@@ -88,32 +96,40 @@ func (r *ManagerReconciler) Reconcile(ctx context.Context,
 	if mgh.Spec.AvailabilityConfig == v1alpha4.HAHigh {
 		replicas = 2
 	}
+	klog.Errorf("#######")
 
 	transportConn := config.GetTransporterConn()
 	if transportConn == nil || transportConn.BootstrapServer == "" {
-		return fmt.Errorf("the transport connection(%s) must not be empty", transportConn)
+		klog.Infof("Wait kafka connection created")
+		return true, nil
 	}
+	klog.Errorf("#######")
 
 	storageConn := config.GetStorageConnection()
 	if storageConn == nil || !config.GetDatabaseReady() {
-		return fmt.Errorf("the storage connection or database isn't ready")
+		return true, fmt.Errorf("the storage connection or database isn't ready")
 	}
+	klog.Errorf("#######")
 
 	if isMiddlewareUpdated(transportConn, storageConn) {
 		err = commonutils.RestartPod(ctx, r.kubeClient, mgh.Namespace, constants.ManagerDeploymentName)
 		if err != nil {
-			return fmt.Errorf("failed to restart manager pod: %w", err)
+			return true, fmt.Errorf("failed to restart manager pod: %w", err)
 		}
 	}
+	klog.Errorf("#######")
+
 	electionConfig, err := config.GetElectionConfig()
 	if err != nil {
-		return fmt.Errorf("failed to get the electionConfig %w", err)
+		return true, fmt.Errorf("failed to get the electionConfig %w", err)
 	}
+	klog.Errorf("#######")
 
 	kafkaConfigYaml, err := transportConn.YamlMarshal(true)
 	if err != nil {
-		return fmt.Errorf("failed to marshall kafka connetion for config: %w", err)
+		return true, fmt.Errorf("failed to marshall kafka connetion for config: %w", err)
 	}
+	klog.Errorf("#######")
 
 	managerObjects, err := hohRenderer.Render("manifests", "", func(profile string) (interface{}, error) {
 		return ManagerVariables{
@@ -148,13 +164,17 @@ func (r *ManagerReconciler) Reconcile(ctx context.Context,
 			WithACM:               config.IsACMResourceReady(),
 		}, nil
 	})
+	klog.Errorf("#######")
+
 	if err != nil {
-		return fmt.Errorf("failed to render manager objects: %v", err)
+		return true, fmt.Errorf("failed to render manager objects: %v", err)
 	}
 	if err = utils.ManipulateGlobalHubObjects(managerObjects, mgh, hohDeployer, mapper, r.GetScheme()); err != nil {
-		return fmt.Errorf("failed to create/update manager objects: %v", err)
+		return true, fmt.Errorf("failed to create/update manager objects: %v", err)
 	}
-	return nil
+	klog.Errorf("#######")
+
+	return false, nil
 }
 
 func isMiddlewareUpdated(transportConn *transport.KafkaConnCredential, storageConn *config.PostgresConnection) bool {

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	kafkav1beta2 "github.com/RedHatInsights/strimzi-client-go/apis/kafka.strimzi.io/v1beta2"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -42,18 +41,34 @@ func (r *KafkaController) Reconcile(ctx context.Context, request ctrl.Request) (
 	if mgh.DeletionTimestamp != nil {
 		return ctrl.Result{}, nil
 	}
-	if err := r.trans.EnsureKafka(); err != nil {
-		return ctrl.Result{}, err
+	var reconcileErr error
+	var kafkaReady bool
+	defer func() {
+		config.UpdateConditionWithErr(ctx, r.GetClient(), reconcileErr, mgh,
+			config.CONDITION_TYPE_KAFKA,
+			config.CONDITION_REASON_KAFKA_READY,
+			config.CONDITION_MESSAGE_KAFKA_READY,
+		)
+	}()
+	if reconcileErr = r.trans.EnsureKafka(); reconcileErr != nil {
+		return ctrl.Result{}, reconcileErr
 	}
 
-	if err := r.trans.kafkaClusterReady(); err != nil {
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+	kafkaReady, reconcileErr = r.trans.kafkaClusterReady()
+	klog.Errorf("##############:%v,%v", kafkaReady, reconcileErr)
+	if reconcileErr != nil {
+		klog.Errorf("##############:%v", reconcileErr)
+		return ctrl.Result{}, reconcileErr
+	}
+	if !kafkaReady {
+		klog.Errorf("##############:%v", kafkaReady)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	// use the client ca to sign the csr for the managed hubs
-	if err := config.SetClientCA(r.trans.ctx, r.trans.mgh.Namespace, KafkaClusterName,
-		r.trans.manager.GetClient()); err != nil {
-		return ctrl.Result{}, err
+	if reconcileErr = config.SetClientCA(r.trans.ctx, r.trans.mgh.Namespace, KafkaClusterName,
+		r.trans.manager.GetClient()); reconcileErr != nil {
+		return ctrl.Result{}, reconcileErr
 	}
 	// update the transporter
 	config.SetTransporter(r.trans)
@@ -61,20 +76,10 @@ func (r *KafkaController) Reconcile(ctx context.Context, request ctrl.Request) (
 	// update the transport connection
 	conn, err := waitManagerTransportConn(ctx, r.trans, DefaultGlobalHubKafkaUserName)
 	if err != nil {
+		reconcileErr = err
 		return ctrl.Result{}, err
 	}
 	config.SetTransporterConn(conn)
-
-	// Update status to mgh so that it can trigger a GlobalHubReconciler
-	if err := config.UpdateCondition(ctx, r.GetClient(), mgh, metav1.Condition{
-		Type:               "KafkaClusterReady",
-		Status:             metav1.ConditionTrue,
-		Reason:             "KafkaClusterIsReady",
-		Message:            "Kafka cluster is ready",
-		LastTransitionTime: metav1.Time{Time: time.Now()},
-	}); err != nil {
-		return ctrl.Result{}, err
-	}
 
 	return ctrl.Result{}, nil
 }

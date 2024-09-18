@@ -144,11 +144,15 @@ func (r *PruneReconciler) pruneACMResources(ctx context.Context) error {
 		return fmt.Errorf("failed to delete ClusterManagementAddon: %w", err)
 	}
 	r.log.Info("deleted ClusterManagementAddon", "name", operatorconstants.GHClusterManagementAddonName)
-
+	klog.Errorf("#######")
 	// prune the hub resources until all addons are cleaned up
 	if err := r.waitUtilAddonDeleted(ctx, r.log); err != nil {
+		klog.Errorf("#######")
+
 		return fmt.Errorf("failed to wait until all addons are deleted: %w", err)
 	}
+	klog.Errorf("#######")
+
 	r.log.Info("all addons are deleted")
 
 	return nil
@@ -162,27 +166,31 @@ func (r *PruneReconciler) GlobalHubResources(ctx context.Context,
 			return err
 		}
 	}
+	klog.Errorf("######")
 
 	if !config.IsBYOKafka() {
 		if err := r.pruneStrimziResources(ctx); err != nil {
 			return err
 		}
 	}
-
+	klog.Errorf("######")
 	mgh.SetFinalizers(operatorutils.Remove(mgh.GetFinalizers(), constants.GlobalHubCleanupFinalizer))
 	if err := operatorutils.UpdateObject(ctx, r.Client, mgh); err != nil {
 		return err
 	}
+	klog.Errorf("######")
 
 	// clean up namesapced resources, eg. mgh system namespace, etc
 	if err := r.pruneNamespacedResources(ctx); err != nil {
 		return err
 	}
+	klog.Errorf("######")
 
 	// clean up the cluster resources, eg. clusterrole, clusterrolebinding, etc
 	if err := r.pruneGlobalResources(ctx); err != nil {
 		return err
 	}
+	klog.Errorf("######")
 
 	if config.IsACMResourceReady() {
 		// remove finalizer from app, policy and placement.
@@ -193,6 +201,7 @@ func (r *PruneReconciler) GlobalHubResources(ctx context.Context,
 		}
 		r.log.Info("removed finalizer from mgh, app, policy, placement and etc")
 	}
+	klog.Errorf("######")
 
 	return nil
 }
@@ -325,6 +334,7 @@ func (r *PruneReconciler) deleteClusterManagementAddon(ctx context.Context) erro
 func (r *PruneReconciler) waitUtilAddonDeleted(ctx context.Context, log logr.Logger) error {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
+	klog.Errorf("######")
 	if err := wait.PollUntilWithContext(ctx, 3*time.Second, func(ctx context.Context) (done bool, err error) {
 		addonList := &addonv1alpha1.ManagedClusterAddOnList{}
 		listOptions := []client.ListOption{
@@ -332,18 +342,28 @@ func (r *PruneReconciler) waitUtilAddonDeleted(ctx context.Context, log logr.Log
 				constants.GlobalHubOwnerLabelKey: constants.GHOperatorOwnerLabelVal,
 			}),
 		}
+		klog.Errorf("######")
+
 		if err := r.List(ctx, addonList, listOptions...); err != nil {
+			klog.Errorf("######:%v", err)
+
 			return false, err
 		}
 		if len(addonList.Items) == 0 {
+			klog.Errorf("######")
 			return true, nil
 		} else {
+			klog.Errorf("######:%v", err)
+
 			log.Info("waiting for managedclusteraddon to be deleted", "addon size", len(addonList.Items))
 			return false, nil
 		}
 	}); err != nil {
+		klog.Errorf("######:%v", err)
+
 		return err
 	}
+	klog.Errorf("######")
 	return nil
 }
 
@@ -433,10 +453,10 @@ func (r *PruneReconciler) pruneStrimziResources(ctx context.Context) error {
 		Name:      protocol.DefaultKafkaSubName,
 	}, kafkaSub)
 	if err != nil {
-		klog.Errorf("Failed to get strimzi subscription, err:%v", err)
 		if errors.IsNotFound(err) {
 			return nil
 		}
+		klog.Errorf("Failed to get strimzi subscription, err:%v", err)
 		return err
 	}
 

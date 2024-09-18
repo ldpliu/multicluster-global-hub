@@ -80,8 +80,16 @@ func GetKafkaStorageSize(mgh *v1alpha4.MulticlusterGlobalHub) string {
 
 // SetTransportConfig sets the kafka type, protocol and topics
 func SetTransportConfig(ctx context.Context, runtimeClient client.Client, mgh *v1alpha4.MulticlusterGlobalHub) error {
-	if err := SetKafkaType(ctx, runtimeClient, mgh.Namespace); err != nil {
-		return err
+	var reconcileErr error
+	defer func() {
+		UpdateConditionWithErr(ctx, runtimeClient, reconcileErr, mgh,
+			CONDITION_TYPE_KAFKA,
+			CONDITION_REASON_TOPIC_PARSED,
+			CONDITION_MESSAGE_TOPIC_PARSED,
+		)
+	}()
+	if reconcileErr = SetKafkaType(ctx, runtimeClient, mgh.Namespace); reconcileErr != nil {
+		return reconcileErr
 	}
 
 	// set the topic
@@ -89,10 +97,12 @@ func SetTransportConfig(ctx context.Context, runtimeClient client.Client, mgh *v
 	statusTopic = mgh.Spec.DataLayer.Kafka.KafkaTopics.StatusTopic
 
 	if !isValidKafkaTopicName(specTopic) {
-		return fmt.Errorf("the specTopic is invalid: %s", specTopic)
+		reconcileErr = fmt.Errorf("the specTopic is invalid: %s", specTopic)
+		return reconcileErr
 	}
 	if !isValidKafkaTopicName(statusTopic) {
-		return fmt.Errorf("the specTopic is invalid: %s", statusTopic)
+		reconcileErr = fmt.Errorf("the specTopic is invalid: %s", statusTopic)
+		return reconcileErr
 	}
 
 	// BYO Case:
@@ -104,12 +114,14 @@ func SetTransportConfig(ctx context.Context, runtimeClient client.Client, mgh *v
 			statusTopic = DEFAULT_SHARED_STATUS_TOPIC
 
 			if err := runtimeClient.Update(ctx, mgh); err != nil {
-				return fmt.Errorf("failed to update the topic from %s to %s", DEFAULT_STATUS_TOPIC, DEFAULT_SHARED_STATUS_TOPIC)
+				reconcileErr = fmt.Errorf("failed to update the topic from %s to %s", DEFAULT_STATUS_TOPIC, DEFAULT_SHARED_STATUS_TOPIC)
+				return reconcileErr
 			}
 		}
 
 		if strings.Contains(statusTopic, "*") {
-			return fmt.Errorf("status topic(%s) must not contain '*'", statusTopic)
+			reconcileErr = fmt.Errorf("status topic(%s) must not contain '*'", statusTopic)
+			return reconcileErr
 		}
 	}
 	return nil

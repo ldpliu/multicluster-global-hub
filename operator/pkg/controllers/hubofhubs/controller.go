@@ -35,12 +35,15 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -59,7 +62,6 @@ import (
 	"github.com/stolostron/multicluster-global-hub/operator/pkg/controllers/hubofhubs/manager"
 	"github.com/stolostron/multicluster-global-hub/operator/pkg/controllers/hubofhubs/metrics"
 	"github.com/stolostron/multicluster-global-hub/operator/pkg/controllers/hubofhubs/prune"
-	"github.com/stolostron/multicluster-global-hub/operator/pkg/controllers/hubofhubs/status"
 	"github.com/stolostron/multicluster-global-hub/operator/pkg/controllers/hubofhubs/storage"
 	"github.com/stolostron/multicluster-global-hub/operator/pkg/controllers/hubofhubs/transporter"
 	"github.com/stolostron/multicluster-global-hub/operator/pkg/controllers/hubofhubs/transporter/protocol"
@@ -81,7 +83,6 @@ type GlobalHubReconciler struct {
 	metricsReconciler   *metrics.MetricsReconciler
 	storageReconciler   *storage.StorageReconciler
 	transportReconciler *transporter.TransportReconciler
-	statusReconciler    *status.StatusReconciler
 	managerReconciler   *manager.ManagerReconciler
 	webhookReconciler   *webhook.WebhookReconciler
 	grafanaReconciler   *grafana.GrafanaReconciler
@@ -103,7 +104,6 @@ func NewGlobalHubReconciler(mgr ctrl.Manager, kubeClient kubernetes.Interface,
 		metricsReconciler:   metrics.NewMetricsReconciler(mgr.GetClient()),
 		storageReconciler:   storage.NewStorageReconciler(mgr, operatorConfig.GlobalResourceEnabled),
 		transportReconciler: transporter.NewTransportReconciler(mgr),
-		statusReconciler:    status.NewStatusReconciler(mgr.GetClient()),
 		managerReconciler:   manager.NewManagerReconciler(mgr, kubeClient, operatorConfig),
 		webhookReconciler:   webhook.NewWebhookReconciler(mgr),
 		grafanaReconciler:   grafana.NewGrafanaReconciler(mgr, kubeClient),
@@ -391,7 +391,8 @@ func watchMulticlusterGlobalHubPredict() predicate.TypedPredicate[*v1alpha4.Mult
 			return true
 		},
 		UpdateFunc: func(e event.TypedUpdateEvent[*v1alpha4.MulticlusterGlobalHub]) bool {
-			return e.ObjectOld.GetResourceVersion() != e.ObjectNew.GetResourceVersion()
+			klog.Errorf("#######%v,%v", e.ObjectOld.GetGeneration(), e.ObjectNew.GetGeneration())
+			return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration()
 		},
 		DeleteFunc: func(e event.TypedDeleteEvent[*v1alpha4.MulticlusterGlobalHub]) bool {
 			return !e.DeleteStateUnknown
@@ -614,9 +615,29 @@ func (r *GlobalHubReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		r.log.Error(err, "failed to get MulticlusterGlobalHub")
 		return ctrl.Result{}, err
 	}
-	err = config.SetMulticlusterGlobalHubConfig(ctx, mgh, r.client, r.imageClient)
-	if err != nil {
-		return ctrl.Result{}, err
+	var reconcileErr error
+	var needRequeue bool
+	// update status condition
+	defer func() {
+		if reconcileErr != nil {
+			err = config.UpdateCondition(ctx, r.client, types.NamespacedName{
+				Namespace: mgh.Namespace,
+				Name:      mgh.Name,
+			}, metav1.Condition{
+				Type:    config.CONDITION_TYPE_GLOBALHUB_READY,
+				Status:  config.CONDITION_STATUS_FALSE,
+				Reason:  config.CONDITION_REASON_GLOBALHUB_NOT_READY,
+				Message: reconcileErr.Error(),
+			}, v1alpha4.GlobalHubError)
+			if err != nil {
+				r.log.Error(err, "failed to update the instance condition")
+			}
+		}
+	}()
+
+	reconcileErr = config.SetMulticlusterGlobalHubConfig(ctx, mgh, r.client, r.imageClient)
+	if reconcileErr != nil {
+		return ctrl.Result{}, reconcileErr
 	}
 	if config.IsPaused(mgh) {
 		r.log.Info("mgh controller is paused, nothing more to do")
@@ -625,27 +646,20 @@ func (r *GlobalHubReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// add finalizer to the mgh
 	if controllerutil.AddFinalizer(mgh, constants.GlobalHubCleanupFinalizer) {
-		if err = r.client.Update(ctx, mgh, &client.UpdateOptions{}); err != nil {
-			if errors.IsConflict(err) {
-				r.log.Info("conflict when adding finalizer to mgh instance", "error", err)
+		if reconcileErr = r.client.Update(ctx, mgh, &client.UpdateOptions{}); reconcileErr != nil {
+			if errors.IsConflict(reconcileErr) {
+				r.log.Info("conflict when adding finalizer to mgh instance", "error", reconcileErr)
 				return ctrl.Result{Requeue: true}, nil
 			}
 		}
 	}
 
-	// update status condition
-	defer func() {
-		err := r.statusReconciler.Reconcile(ctx, mgh, err)
-		if err != nil {
-			r.log.Error(err, "failed to update the instance condition")
-		}
-	}()
-
 	config.SetImportClusterInHosted(mgh)
 
 	// prune resources if deleting mgh or metrics is disabled
 	if err = r.pruneReconciler.Reconcile(ctx, mgh); err != nil {
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, fmt.Errorf("failed to prune Global Hub resources %v", err)
+		reconcileErr = fmt.Errorf("failed to prune Global Hub resources %v", err)
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, reconcileErr
 	}
 	if mgh.GetDeletionTimestamp() != nil {
 		return ctrl.Result{}, nil
@@ -655,53 +669,66 @@ func (r *GlobalHubReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// update the managed hub clusters
 		// only reconcile once: upgrade
 		if !r.upgraded {
-			if err = utils.RemoveManagedHubClusterFinalizer(ctx, r.client); err != nil {
-				return ctrl.Result{}, fmt.Errorf("failed to upgrade from release-2.10: %v", err)
+			if reconcileErr = utils.RemoveManagedHubClusterFinalizer(ctx, r.client); reconcileErr != nil {
+				reconcileErr = fmt.Errorf("failed to upgrade. err: %v", reconcileErr)
+				return ctrl.Result{}, reconcileErr
 			}
 			r.upgraded = true
 		}
-		if err := utils.AnnotateManagedHubCluster(ctx, r.client); err != nil {
-			return ctrl.Result{}, err
+		if reconcileErr = utils.AnnotateManagedHubCluster(ctx, r.client); reconcileErr != nil {
+			return ctrl.Result{}, reconcileErr
 		}
 	}
 
 	// storage and transporter
-	if err = r.ReconcileMiddleware(ctx, mgh); err != nil {
-		return ctrl.Result{}, err
+	needRequeue, reconcileErr = r.ReconcileMiddleware(ctx, mgh)
+	klog.Errorf("#########:%v,%v", needRequeue, reconcileErr)
+	if reconcileErr != nil {
+		return ctrl.Result{}, reconcileErr
+	}
+	if needRequeue {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	// reconcile metrics
-	if err := r.metricsReconciler.Reconcile(ctx, mgh); err != nil {
-		return ctrl.Result{}, err
+	if reconcileErr = r.metricsReconciler.Reconcile(ctx, mgh); reconcileErr != nil {
+		return ctrl.Result{}, reconcileErr
 	}
-
+	klog.Errorf("########")
 	// reconcile manager
-	if err := r.managerReconciler.Reconcile(ctx, mgh); err != nil {
-		return ctrl.Result{}, err
+	needRequeue, reconcileErr = r.managerReconciler.Reconcile(ctx, mgh)
+	klog.Errorf("######:%v, %v", needRequeue, reconcileErr)
+	if reconcileErr != nil {
+		klog.Errorf("#########")
+		return ctrl.Result{}, reconcileErr
+	}
+	if needRequeue {
+		klog.Errorf("#########")
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	if config.WithInventory(mgh) {
 		// reconcile inventory
-		if err := r.inventoryReconciler.Reconcile(ctx, mgh); err != nil {
-			return ctrl.Result{}, err
+		if reconcileErr = r.inventoryReconciler.Reconcile(ctx, mgh); reconcileErr != nil {
+			return ctrl.Result{}, reconcileErr
 		}
 	}
 
 	if config.IsACMResourceReady() {
 		// webhook required ACM
-		if err := r.webhookReconciler.Reconcile(ctx, mgh); err != nil {
-			return ctrl.Result{}, err
+		if reconcileErr = r.webhookReconciler.Reconcile(ctx, mgh); reconcileErr != nil {
+			return ctrl.Result{}, reconcileErr
 		}
 		// Grafana is required for ACM global hub
 		// reconcile grafana
-		if err := r.grafanaReconciler.Reconcile(ctx, mgh); err != nil {
-			return ctrl.Result{}, err
+		if reconcileErr = r.grafanaReconciler.Reconcile(ctx, mgh); reconcileErr != nil {
+			return ctrl.Result{}, reconcileErr
 		}
 	}
 
 	if config.IsACMResourceReady() && config.GetAddonManager() != nil {
-		if err := utils.TriggerManagedHubAddons(ctx, r.client, config.GetAddonManager()); err != nil {
-			return ctrl.Result{}, err
+		if reconcileErr = utils.TriggerManagedHubAddons(ctx, r.client, config.GetAddonManager()); reconcileErr != nil {
+			return ctrl.Result{}, reconcileErr
 		}
 	}
 
@@ -713,15 +740,20 @@ func (r *GlobalHubReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // 2. then create the kafka and postgres resources at the same time
 // 3. wait for kafka and postgres ready
 func (r *GlobalHubReconciler) ReconcileMiddleware(ctx context.Context, mgh *v1alpha4.MulticlusterGlobalHub,
-) error {
+) (bool, error) {
 	if err := r.transportReconciler.Reconcile(ctx, mgh); err != nil {
-		return err
+		return true, err
 	}
-
-	if err := r.storageReconciler.Reconcile(ctx, mgh); err != nil {
-		return err
+	klog.Errorf("########")
+	needRequeue, err := r.storageReconciler.Reconcile(ctx, mgh)
+	klog.Errorf("########:%v,%v", needRequeue, err)
+	if err != nil {
+		return true, err
 	}
-	return nil
+	if needRequeue {
+		return true, nil
+	}
+	return false, nil
 }
 
 var WatchedSecret = sets.NewString(
