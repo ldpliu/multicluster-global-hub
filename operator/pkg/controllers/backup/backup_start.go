@@ -24,6 +24,7 @@ import (
 	mchv1 "github.com/stolostron/multiclusterhub-operator/api/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/klog"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -49,6 +50,22 @@ type BackupReconciler struct {
 	manager.Manager
 	client.Client
 	Log logr.Logger
+}
+
+func StartController(initOption config.InitOption) (bool, error) {
+	if !config.IsACMResourceReady() {
+		return false, nil
+	}
+	if !initOption.IsMghReady {
+		return false, nil
+	}
+	err := NewBackupReconciler(initOption.Mgr, ctrl.Log.WithName("backup-reconciler")).SetupWithManager(initOption.Mgr)
+	if err != nil {
+		return false, err
+	}
+
+	klog.Infof("inited controller: %v", initOption.ControllerName)
+	return true, nil
 }
 
 func NewBackupReconciler(mgr manager.Manager, log logr.Logger) *BackupReconciler {

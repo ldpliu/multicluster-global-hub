@@ -71,6 +71,21 @@ type AddonsReconciler struct {
 	client.Client
 }
 
+func StartController(initOption config.InitOption) (bool, error) {
+	if !config.IsACMResourceReady() {
+		return false, nil
+	}
+	if !initOption.IsMghReady {
+		return false, nil
+	}
+	err := NewAddonsReconciler(initOption.Mgr).SetupWithManager(initOption.Mgr)
+	if err != nil {
+		return false, err
+	}
+	klog.Infof("inited controller: %v", initOption.ControllerName)
+	return true, nil
+}
+
 func NewAddonsReconciler(mgr manager.Manager) *AddonsReconciler {
 	return &AddonsReconciler{
 		Manager: mgr,

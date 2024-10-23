@@ -35,7 +35,6 @@ var (
 	specTopic             = ""
 	statusTopic           = ""
 	kafkaResourceReady    = false
-	acmResourceReady      = false
 	kafkaClientCAKey      []byte
 	kafkaClientCACert     []byte
 	inventoryClientCAKey  []byte
@@ -65,14 +64,6 @@ func GetKafkaResourceReady() bool {
 
 func SetKafkaResourceReady(ready bool) {
 	kafkaResourceReady = ready
-}
-
-func IsACMResourceReady() bool {
-	return acmResourceReady
-}
-
-func SetACMResourceReady(ready bool) {
-	acmResourceReady = ready
 }
 
 func GetKafkaStorageSize(mgh *v1alpha4.MulticlusterGlobalHub) string {
@@ -185,8 +176,16 @@ func SetKafkaType(ctx context.Context, runtimeClient client.Client, namespace st
 	return nil
 }
 
+func SetBYOKafka(byoKafka bool) {
+	isBYOKafka = byoKafka
+}
+
 func IsBYOKafka() bool {
 	return isBYOKafka
+}
+
+func SetTransporterProtocol(tp transport.TransportProtocol) {
+	transporterProtocol = tp
 }
 
 func TransporterProtocol() transport.TransportProtocol {

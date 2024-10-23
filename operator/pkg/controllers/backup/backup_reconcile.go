@@ -61,6 +61,9 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if len(mghList.Items) == 0 {
 		return ctrl.Result{}, nil
 	}
+
+	// if delete???
+
 	mgh := mghList.Items[0].DeepCopy()
 	// Backup condition means added backup label to all resources already
 	backuped := meta.IsStatusConditionTrue(mgh.Status.Conditions, config.CONDITION_TYPE_BACKUP)

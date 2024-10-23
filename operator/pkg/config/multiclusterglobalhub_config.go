@@ -34,9 +34,12 @@ import (
 	"k8s.io/klog/v2"
 	"open-cluster-management.io/addon-framework/pkg/addonmanager"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/stolostron/multicluster-global-hub/operator/api/operator/v1alpha4"
 	operatorconstants "github.com/stolostron/multicluster-global-hub/operator/pkg/constants"
+	"github.com/stolostron/multicluster-global-hub/pkg/utils"
 )
 
 // ManifestImage contains details for a specific image version
@@ -86,7 +89,28 @@ var (
 	addonMgr              addonmanager.AddonManager
 	importClusterInHosted = false
 	mu                    sync.Mutex
+	acmResourceReady      = false
 )
+
+var NamespacePred = predicate.Funcs{
+	CreateFunc: func(e event.CreateEvent) bool {
+		return e.Object.GetNamespace() == utils.GetDefaultNamespace()
+	},
+	UpdateFunc: func(e event.UpdateEvent) bool {
+		return e.ObjectNew.GetNamespace() == utils.GetDefaultNamespace()
+	},
+	DeleteFunc: func(e event.DeleteEvent) bool {
+		return e.Object.GetNamespace() == utils.GetDefaultNamespace()
+	},
+}
+
+func IsACMResourceReady() bool {
+	return acmResourceReady
+}
+
+func SetACMResourceReady(ready bool) {
+	acmResourceReady = ready
+}
 
 func SetAddonManager(addonManager addonmanager.AddonManager) {
 	addonMgr = addonManager
@@ -304,6 +328,8 @@ func SetMulticlusterGlobalHubConfig(ctx context.Context, mgh *v1alpha4.Multiclus
 		Namespace: mgh.GetNamespace(), Name: mgh.GetName(),
 	})
 
+	SetImportClusterInHosted(mgh)
+
 	// set image overrides
 	if err := SetImageOverrides(mgh); err != nil {
 		return err
@@ -353,7 +379,9 @@ func SetMulticlusterGlobalHubConfig(ctx context.Context, mgh *v1alpha4.Multiclus
 
 func GetMulticlusterGlobalHub(ctx context.Context, c client.Client) (*v1alpha4.MulticlusterGlobalHub, error) {
 	mghList := &v1alpha4.MulticlusterGlobalHubList{}
-	err := c.List(ctx, mghList)
+	err := c.List(ctx, mghList, &client.ListOptions{
+		Namespace: utils.GetDefaultNamespace(),
+	})
 	if err != nil {
 		return nil, err
 	}

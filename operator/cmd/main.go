@@ -35,9 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"github.com/stolostron/multicluster-global-hub/operator/pkg/config"
-	"github.com/stolostron/multicluster-global-hub/operator/pkg/controllers/crd"
-	"github.com/stolostron/multicluster-global-hub/operator/pkg/controllers/hubofhubs"
-	"github.com/stolostron/multicluster-global-hub/operator/pkg/controllers/status"
+	"github.com/stolostron/multicluster-global-hub/operator/pkg/controllers"
 	globalhubwebhook "github.com/stolostron/multicluster-global-hub/operator/pkg/webhook"
 	"github.com/stolostron/multicluster-global-hub/pkg/utils"
 )
@@ -84,24 +82,9 @@ func doMain(ctx context.Context, cfg *rest.Config) int {
 		setupLog.Error(err, "failed to create openshift image client")
 		return 1
 	}
-
-	// global hub controller
-	globalHubController, err := hubofhubs.NewGlobalHubController(mgr, kubeClient, operatorConfig, imageClient)
+	err = controllers.NewInitController(mgr, kubeClient, operatorConfig, imageClient).SetupWithManager(mgr)
 	if err != nil {
-		setupLog.Error(err, "unable to create crd controller")
-		return 1
-	}
-
-	_, err = crd.AddCRDController(mgr, operatorConfig, kubeClient, globalHubController)
-	if err != nil {
-		setupLog.Error(err, "unable to create crd controller")
-		return 1
-	}
-
-	statusController := status.NewStatusReconciler(mgr.GetClient())
-	err = statusController.SetupWithManager(mgr)
-	if err != nil {
-		setupLog.Error(err, "unable to create status controller")
+		setupLog.Error(err, "unable to create init controller")
 		return 1
 	}
 

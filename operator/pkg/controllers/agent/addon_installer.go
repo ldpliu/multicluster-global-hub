@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/klog"
 	"open-cluster-management.io/api/addon/v1alpha1"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -19,12 +20,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/stolostron/multicluster-global-hub/operator/pkg/config"
 	operatorconstants "github.com/stolostron/multicluster-global-hub/operator/pkg/constants"
-	operatortrans "github.com/stolostron/multicluster-global-hub/operator/pkg/controllers/hubofhubs/transporter/protocol"
+	operatortrans "github.com/stolostron/multicluster-global-hub/operator/pkg/controllers/transporter/protocol"
 	"github.com/stolostron/multicluster-global-hub/operator/pkg/utils"
 	"github.com/stolostron/multicluster-global-hub/pkg/constants"
 )
@@ -32,6 +34,28 @@ import (
 type AddonInstaller struct {
 	client.Client
 	Log logr.Logger
+}
+
+func StartController(initOption config.InitOption) (bool, error) {
+	if !config.IsACMResourceReady() {
+		return false, nil
+	}
+	if !initOption.IsMghReady {
+		return false, nil
+	}
+	err := NewAddonInstaller(initOption.Mgr).SetupWithManager(initOption.Ctx, initOption.Mgr)
+	if err != nil {
+		return false, err
+	}
+	klog.Infof("inited controller: %v", initOption.ControllerName)
+	return true, nil
+}
+
+func NewAddonInstaller(mgr manager.Manager) *AddonInstaller {
+	return &AddonInstaller{
+		mgr.GetClient(),
+		ctrl.Log.WithName("addon-reconciler"),
+	}
 }
 
 func (r *AddonInstaller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
