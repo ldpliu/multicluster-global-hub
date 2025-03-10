@@ -105,12 +105,14 @@ func getUpdatedManagedClusterLabelsBundles(timestamp *time.Time,
 func getManagedClusterLabelBundleByRows(db *gorm.DB, rows *sql.Rows) (
 	map[string]*spec.ManagedClusterLabelsSpecBundle, error,
 ) {
+	log.Debugf("getManagedClusterLabelBundleByRows")
 	leafHubToLabelsSpecBundleMap := make(map[string]*spec.ManagedClusterLabelsSpecBundle)
 	for rows.Next() {
 		managedClusterLabel := models.ManagedClusterLabel{}
 		if err := db.ScanRows(rows, &managedClusterLabel); err != nil {
 			return nil, fmt.Errorf("error reading managed cluster label from table - %w", err)
 		}
+		log.Debugf("managedClusterLabel: %v", managedClusterLabel)
 
 		// create ManagedClusterLabelsSpecBundle if not mapped for leafHub
 		managedClusterLabelsSpecBundle, found := leafHubToLabelsSpecBundleMap[managedClusterLabel.LeafHubName]
@@ -127,12 +129,14 @@ func getManagedClusterLabelBundleByRows(db *gorm.DB, rows *sql.Rows) (
 		if err != nil {
 			return nil, fmt.Errorf("error to unmarshal labels - %w", err)
 		}
+		log.Debugf("labels: %v", labels)
 
 		deletedKeys := []string{}
 		err = json.Unmarshal(managedClusterLabel.DeletedLabelKeys, &deletedKeys)
 		if err != nil {
 			return nil, fmt.Errorf("error to unmarshal deletedKeys - %w", err)
 		}
+		log.Debugf("deletedKeys: %v", deletedKeys)
 
 		managedClusterLabelsSpecBundle.Objects = append(managedClusterLabelsSpecBundle.Objects,
 			&spec.ManagedClusterLabelsSpec{
