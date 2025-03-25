@@ -19,12 +19,10 @@ func AddToManager(context context.Context, mgr ctrl.Manager, transportClient tra
 ) error {
 	log := logger.DefaultZapLogger()
 	if transportClient.GetConsumer() == nil {
-		log.Info("the consumer is not initialized for the spec controllers")
-		return nil
+		return fmt.Errorf("the consumer is not initialized")
 	}
 	if transportClient.GetProducer() == nil {
-		log.Info("the producer is not initialized for the spec controllers")
-		return nil
+		return fmt.Errorf("the producer is not initialized")
 	}
 
 	// add worker pool to manager
@@ -50,7 +48,7 @@ func AddToManager(context context.Context, mgr ctrl.Manager, transportClient tra
 	dispatcher.RegisterSyncer(constants.CloudEventTypeMigrationFrom,
 		syncers.NewManagedClusterMigrationFromSyncer(mgr.GetClient(), transportClient))
 	dispatcher.RegisterSyncer(constants.CloudEventTypeMigrationTo,
-		syncers.NewManagedClusterMigrationToSyncer(mgr.GetClient()))
+		syncers.NewManagedClusterMigrationToSyncer(mgr.GetClient(), transportClient))
 	dispatcher.RegisterSyncer(constants.ResyncMsgKey, syncers.NewResyncer())
 
 	log.Info("added the spec controllers to manager")
