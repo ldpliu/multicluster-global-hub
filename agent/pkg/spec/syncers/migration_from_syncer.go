@@ -200,6 +200,126 @@ func (m *managedClusterMigrationFromSyncer) registering(
 		} else {
 			return err
 		}
+	} else {
+		if err := m.client.Delete(ctx, klusterletConfig); err != nil {
+			return err
+		}
+	}
+	containBootstrapSecret := false
+	kubeConfigSecrets := klusterletConfig.Spec.BootstrapKubeConfigs.LocalSecrets.KubeConfigSecrets
+	for _, kubeConfigSecret := range kubeConfigSecrets {
+		if kubeConfigSecret.Name == bootstrapSecret.Name {
+			containBootstrapSecret = true
+		}
+	}
+	if !containBootstrapSecret {
+		klusterletConfig.Spec.BootstrapKubeConfigs.LocalSecrets.KubeConfigSecrets = append(kubeConfigSecrets,
+			operatorv1.KubeConfigSecret{Name: bootstrapSecret.Name})
+		if err := m.client.Update(ctx, klusterletConfig); err != nil {
+			return err
+		}
+	}
+
+	// update managed cluster annotations to point to the new klusterletconfig
+	managedClusters := migratingEvt.ManagedClusters
+	for _, managedCluster := range managedClusters {
+		mc := &clusterv1.ManagedCluster{}
+		if err := m.client.Get(ctx, types.NamespacedName{
+			Name: managedCluster,
+		}, mc); err != nil {
+			return err
+		}
+		annotations := mc.Annotations
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
+
+		_, migrating := annotations[constants.ManagedClusterMigrating]
+		if migrating && annotations["agent.open-cluster-management.io/klusterlet-config"] == klusterletConfig.Name {
+			continue
+		}
+		annotations["agent.open-cluster-management.io/klusterlet-config"] = klusterletConfig.Name
+		annotations[constants.ManagedClusterMigrating] = ""
+		mc.SetAnnotations(annotations)
+		if err := m.client.Update(ctx, mc); err != nil {
+			return err
+		}
+	}
+
+	// ensure the bootstrap secret is propagated into the managed cluster
+	time.Sleep(sleepForApplying)
+
+	// set the hub accept client into false to trigger the re-registering
+	for _, managedCluster := range managedClusters {
+		mc := &clusterv1.ManagedCluster{}
+		if err := m.client.Get(ctx, types.NamespacedName{
+			Name: managedCluster,
+		}, mc); err != nil {
+			return err
+		}
+		mc.Spec.HubAcceptsClient = false
+		m.log.Infof("updating managedcluster %s to set HubAcceptsClient as false", mc.Name)
+		if err := m.client.Update(ctx, mc); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (m *managedClusterMigrationFromSyncer) registering(
+	ctx context.Context, migratingEvt *bundleevent.ManagedClusterMigrationFromEvent,
+) error {
+	bootstrapSecret := migratingEvt.BootstrapSecret
+	// ensure bootstrap kubeconfig secret
+	foundBootstrapSecret := &corev1.Secret{}
+	if err := m.client.Get(ctx,
+		types.NamespacedName{
+			Name:      bootstrapSecret.Name,
+			Namespace: bootstrapSecret.Namespace,
+		}, foundBootstrapSecret); err != nil {
+		if apierrors.IsNotFound(err) {
+			m.log.Infof("creating bootstrap secret %s", bootstrapSecret.GetName())
+			if err := m.client.Create(ctx, bootstrapSecret); err != nil {
+				return err
+			}
+		} else {
+			return err
+		}
+	} else {
+		// update the bootstrap secret if it already exists
+		m.log.Infof("updating bootstrap secret %s", bootstrapSecret.GetName())
+		if err := m.client.Update(ctx, bootstrapSecret); err != nil {
+			return err
+		}
+	}
+
+	// ensure klusterletconfig
+	klusterletConfig := &klusterletv1alpha1.KlusterletConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: klusterletConfigNamePrefix + migratingEvt.ToHub,
+		},
+		Spec: klusterletv1alpha1.KlusterletConfigSpec{
+			BootstrapKubeConfigs: operatorv1.BootstrapKubeConfigs{
+				Type: operatorv1.LocalSecrets,
+				LocalSecrets: operatorv1.LocalSecretsConfig{
+					KubeConfigSecrets: []operatorv1.KubeConfigSecret{
+						{
+							Name: bootstrapSecret.Name,
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := m.client.Get(ctx, client.ObjectKeyFromObject(klusterletConfig), klusterletConfig); err != nil {
+		if apierrors.IsNotFound(err) {
+			if err := m.client.Create(ctx, klusterletConfig); err != nil {
+				return err
+			}
+		} else {
+			return err
+		}
 	}
 	containBootstrapSecret := false
 	kubeConfigSecrets := klusterletConfig.Spec.BootstrapKubeConfigs.LocalSecrets.KubeConfigSecrets
