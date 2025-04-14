@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/stolostron/multicluster-global-hub/operator/api/operator/v1alpha4"
+	"github.com/stolostron/multicluster-global-hub/operator/pkg/certificates"
 	"github.com/stolostron/multicluster-global-hub/operator/pkg/config"
 	operatorconstants "github.com/stolostron/multicluster-global-hub/operator/pkg/constants"
 	"github.com/stolostron/multicluster-global-hub/operator/pkg/deployer"
@@ -276,6 +277,18 @@ func (r *ManagerReconciler) Reconcile(ctx context.Context,
 		reconcileErr = fmt.Errorf("failed to marshall kafka connetion for config: %w", err)
 		return ctrl.Result{}, reconcileErr
 	}
+	var inventoryConfigYaml []byte
+	if config.WithInventory(mgh) {
+		inventoryConn, reconcileErr := certificates.GetInventoryCredential(r.GetClient())
+		if reconcileErr != nil {
+			return ctrl.Result{}, reconcileErr
+		}
+		inventoryConfigYaml, err = inventoryConn.YamlMarshal(true)
+		if err != nil {
+			reconcileErr = fmt.Errorf("failed to marshalling the inventory config yaml: %w", err)
+			return ctrl.Result{}, reconcileErr
+		}
+	}
 
 	managerObjects, err := hohRenderer.Render("manifests", "", func(profile string) (interface{}, error) {
 		return ManagerVariables{
@@ -292,6 +305,7 @@ func (r *ManagerReconciler) Reconcile(ctx context.Context,
 			TransportConfigSecret:     constants.GHTransportConfigSecret,
 			StorageConfigSecret:       constants.GHStorageConfigSecret,
 			KafkaConfigYaml:           base64.StdEncoding.EncodeToString(kafkaConfigYaml),
+			InventoryConfigYaml:       base64.StdEncoding.EncodeToString(inventoryConfigYaml),
 			Namespace:                 mgh.Namespace,
 			LeaseDuration:             strconv.Itoa(electionConfig.LeaseDuration),
 			RenewDeadline:             strconv.Itoa(electionConfig.RenewDeadline),
@@ -450,6 +464,7 @@ type ManagerVariables struct {
 	TransportConfigSecret     string
 	StorageConfigSecret       string
 	KafkaConfigYaml           string
+	InventoryConfigYaml       string
 	TransportType             string
 	Namespace                 string
 	LeaseDuration             string
