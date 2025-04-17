@@ -242,18 +242,19 @@ func TestManagedClusterHandler_postToInventoryApi(t *testing.T) {
 			clusterv1.AddToScheme(scheme.Scheme)
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithRuntimeObjects(tt.initObjects...).Build()
 
-			h := &managedClusterHandler{
-				c:   fakeClient,
-				log: logger.ZapLogger("test"),
-			}
 			fakeRequester := &FakeRequester{
 				HttpClient: &v1beta1.InventoryHttpClient{
 					K8sClusterService: &FakeKesselK8SClusterServiceHTTPClientImpl{},
 				},
 			}
+
+			h := &managedClusterHandler{
+				c:         fakeClient,
+				log:       logger.ZapLogger("test"),
+				requester: fakeRequester,
+			}
 			gotCreate, gotUpdate, gotDelete := h.postToInventoryApi(
 				tt.args.ctx,
-				fakeRequester,
 				tt.args.createClusters,
 				tt.args.updateClusters,
 				tt.args.deleteClusters,

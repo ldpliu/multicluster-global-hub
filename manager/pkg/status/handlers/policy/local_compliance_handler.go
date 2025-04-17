@@ -7,34 +7,39 @@ import (
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 	set "github.com/deckarep/golang-set"
-	"github.com/go-logr/logr"
+	kesselv1betarelations "github.com/project-kessel/inventory-api/api/kessel/inventory/v1beta1/relationships"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-	ctrl "sigs.k8s.io/controller-runtime"
 
+	"github.com/stolostron/multicluster-global-hub/manager/pkg/configs"
 	"github.com/stolostron/multicluster-global-hub/manager/pkg/status/conflator"
 	"github.com/stolostron/multicluster-global-hub/pkg/bundle/grc"
 	eventversion "github.com/stolostron/multicluster-global-hub/pkg/bundle/version"
 	"github.com/stolostron/multicluster-global-hub/pkg/database"
 	"github.com/stolostron/multicluster-global-hub/pkg/database/models"
 	"github.com/stolostron/multicluster-global-hub/pkg/enum"
+	"github.com/stolostron/multicluster-global-hub/pkg/logger"
+	"github.com/stolostron/multicluster-global-hub/pkg/transport"
 )
 
 type localPolicyComplianceHandler struct {
-	log           logr.Logger
+	log           *zap.SugaredLogger
 	eventType     string
 	eventSyncMode enum.EventSyncMode
 	eventPriority conflator.ConflationPriority
+	requester     transport.Requester
 }
 
 func RegisterLocalPolicyComplianceHandler(conflationManager *conflator.ConflationManager) {
 	eventType := string(enum.LocalComplianceType)
 	logName := strings.Replace(eventType, enum.EventTypePrefix, "", -1)
 	h := &localPolicyComplianceHandler{
-		log:           ctrl.Log.WithName(logName),
+		log:           logger.ZapLogger(logName),
 		eventType:     eventType,
 		eventSyncMode: enum.CompleteStateMode,
 		eventPriority: conflator.LocalCompliancePriority,
+		requester:     conflationManager.Requster,
 	}
 	conflationManager.Register(conflator.NewConflationRegistration(
 		h.eventPriority,
@@ -45,13 +50,20 @@ func RegisterLocalPolicyComplianceHandler(conflationManager *conflator.Conflatio
 }
 
 func (h *localPolicyComplianceHandler) handleEventWrapper(ctx context.Context, evt *cloudevents.Event) error {
-	return handleCompliance(h.log, ctx, evt)
+	return h.handleCompliance(ctx, evt)
 }
 
-func handleCompliance(log logr.Logger, ctx context.Context, evt *cloudevents.Event) error {
+func (h *localPolicyComplianceHandler) handleCompliance(ctx context.Context, evt *cloudevents.Event) error {
 	version := evt.Extensions()[eventversion.ExtVersion]
 	leafHub := evt.Source()
-	log.V(2).Info("handler start", "type", evt.Type(), "LH", evt.Source(), "version", version)
+	extMchVersion := evt.Extensions()[eventversion.ExtMchVersion]
+	leafHubName := evt.Source()
+	var mchVersion string
+	if extMchVersion != nil {
+		mchVersion = extMchVersion.(string)
+	}
+
+	h.log.Debug("handler start", "type", evt.Type(), "LH", evt.Source(), "version", version)
 
 	data := grc.ComplianceBundle{}
 	if err := evt.DataAs(&data); err != nil {
@@ -97,38 +109,31 @@ func handleCompliance(log logr.Logger, ctx context.Context, evt *cloudevents.Eve
 		batchLocalCompliances = append(batchLocalCompliances, unknownCompliances...)
 		batchLocalCompliances = append(batchLocalCompliances, pendingCompliances...)
 
-		// batch upsert
-		err = db.Clauses(clause.OnConflict{
-			UpdateAll: true,
-		}).CreateInBatches(batchLocalCompliances, 100).Error
+		err = postCompliancesData(
+			ctx,
+			db,
+			h.log,
+			h.requester,
+			leafHubName, mchVersion,
+			policyID,
+			batchLocalCompliances,
+			complianceClustersFromDB.complianceToSetMap,
+			allClustersOnDB,
+		)
 		if err != nil {
 			return err
-		}
-
-		// delete
-		err = db.Transaction(func(tx *gorm.DB) error {
-			for _, name := range allClustersOnDB.ToSlice() {
-				clusterName, ok := name.(string)
-				if !ok {
-					continue
-				}
-				err := tx.Where(&models.LocalStatusCompliance{
-					LeafHubName: leafHub,
-					PolicyID:    policyID,
-					ClusterName: clusterName,
-				}).Delete(&models.LocalStatusCompliance{}).Error
-				if err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			return fmt.Errorf("failed to handle clusters per policy bundle - %w", err)
 		}
 		// keep this policy in db, should remove from db only policies that were not sent in the bundle
 		delete(allComplianceClustersFromDB, policyID)
 	}
+
+	// TODO: Need to make sure it can remove all items of the policyID, if not, we should use for loop
+	// if resp, err := h.requester.GetHttpClient().K8SPolicyIsPropagatedToK8SClusterServiceHTTPClient.
+	// 	DeleteK8SPolicyIsPropagatedToK8SCluster(
+	// 		ctx, deleteK8SPolicyIsPropagatedToK8SCluster(policy.Namespace+"/"+policy.Name,
+	// 			"", leafHubName, mchVersion)); err != nil {
+	// 	return fmt.Errorf("failed to delete k8spolicy_is-propagated-to_k8scluster %v: %w", resp, err)
+	// }
 
 	// delete the policy isn't contained on the bundle
 	err = db.Transaction(func(tx *gorm.DB) error {
@@ -146,8 +151,269 @@ func handleCompliance(log logr.Logger, ctx context.Context, evt *cloudevents.Eve
 		return fmt.Errorf("failed to handle local compliance event - %w", err)
 	}
 
-	log.V(2).Info("handler finished", "type", evt.Type(), "LH", evt.Source(), "version", version)
+	h.log.Info("handler finished", "type", evt.Type(), "LH", evt.Source(), "version", version)
 	return nil
+}
+
+// postCompliancesData generate the create/update/delete compliances
+// and post the data to database and inventory
+func postCompliancesData(
+	ctx context.Context,
+	db *gorm.DB,
+	log *zap.SugaredLogger,
+	requester transport.Requester,
+	leafHubName string,
+	mchVersion string,
+	policyID string,
+	localCompliancesFromEvents []models.LocalStatusCompliance,
+	complianceFromDb map[database.ComplianceStatus]set.Set,
+	allClustersOnDB set.Set,
+) error {
+	createCompliances, updateCompliances, deleteCompliances := generateCreateUpdateDeleteCompliances(
+		localCompliancesFromEvents,
+		complianceFromDb,
+		allClustersOnDB,
+		leafHubName,
+		policyID,
+	)
+	// The data in inventory should be same as the data in the database
+	// so we will post to inventory if there is some changes based on the data in database
+	// Note: we do not handle the case: when run globalhub sometimes, and the data has post
+	// database then enable inventory api
+	if configs.GetEnableInventoryAPI() {
+		if requester == nil {
+			return fmt.Errorf("requester is nil")
+		}
+		createCompliancesToInventory, updateCompliancesToInventory, deleteCompliancesFromInventory := postCompliancesToInventoryApi(
+			ctx,
+			db,
+			log,
+			requester,
+			leafHubName, policyID,
+			createCompliances,
+			updateCompliances,
+			deleteCompliances,
+			mchVersion,
+		)
+		log.Debugw("post to inventory api", "LH",
+			leafHubName, "create",
+			createCompliancesToInventory, "update",
+			updateCompliancesToInventory, "delete",
+			deleteCompliancesFromInventory)
+
+		// we only post the data to database which successfully posted to inventory
+		createCompliances = createCompliancesToInventory
+		updateCompliances = updateCompliancesToInventory
+		deleteCompliances = deleteCompliancesFromInventory
+	}
+	return postCompliancesToDatabase(
+		ctx, db,
+		leafHubName, policyID,
+		createCompliances,
+		updateCompliances,
+		deleteCompliances,
+	)
+}
+
+func postCompliancesToDatabase(
+	ctx context.Context,
+	db *gorm.DB,
+	leafHub string, policyID string,
+	createCompliances []models.LocalStatusCompliance,
+	updateCompliances []models.LocalStatusCompliance,
+	deleteCompliances []models.LocalStatusCompliance,
+) error {
+	updateCompliances = append(updateCompliances, createCompliances...)
+	if updateCompliances == nil {
+		return nil
+	}
+	err := db.Clauses(clause.OnConflict{
+		UpdateAll: true,
+	}).CreateInBatches(updateCompliances, 100).Error
+	if err != nil {
+		return err
+	}
+
+	err = db.Transaction(func(tx *gorm.DB) error {
+		for _, deleteCompliance := range deleteCompliances {
+			err := tx.Where(deleteCompliance).Delete(&models.LocalStatusCompliance{}).Error
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to handle clusters per policy bundle - %w", err)
+	}
+	return nil
+}
+
+func postCompliancesToInventoryApi(
+	ctx context.Context,
+	db *gorm.DB,
+	log *zap.SugaredLogger,
+	requester transport.Requester,
+	leafHub string, policyID string,
+	createCompliances []models.LocalStatusCompliance,
+	updateCompliances []models.LocalStatusCompliance,
+	deleteCompliances []models.LocalStatusCompliance,
+	mchVersion string,
+) (
+	[]models.LocalStatusCompliance,
+	[]models.LocalStatusCompliance,
+	[]models.LocalStatusCompliance,
+) {
+	var createCompliancesToInventory []models.LocalStatusCompliance
+	var updateCompliancesToInventory []models.LocalStatusCompliance
+	var deleteCompliancesInInventory []models.LocalStatusCompliance
+
+	if len(createCompliances) > 0 {
+		for _, createCompliance := range createCompliances {
+			if resp, err := requester.GetHttpClient().K8SPolicyIsPropagatedToK8SClusterServiceHTTPClient.
+				UpdateK8SPolicyIsPropagatedToK8SCluster(ctx, updateK8SPolicyIsPropagatedToK8SCluster(
+					createCompliance.PolicyID, createCompliance.ClusterName, string(createCompliance.Compliance),
+					leafHub, mchVersion)); err != nil {
+				log.Errorf("failed to create k8s policy is propagated to k8s cluster -%v: %w", resp, err)
+			} else {
+				createCompliancesToInventory = append(createCompliancesToInventory, createCompliance)
+			}
+		}
+	}
+	if len(updateCompliances) > 0 {
+		for _, updateCompliance := range updateCompliances {
+			if resp, err := requester.GetHttpClient().K8SPolicyIsPropagatedToK8SClusterServiceHTTPClient.
+				UpdateK8SPolicyIsPropagatedToK8SCluster(ctx, updateK8SPolicyIsPropagatedToK8SCluster(
+					updateCompliance.PolicyID, updateCompliance.ClusterName, string(updateCompliance.Compliance),
+					leafHub, mchVersion)); err != nil {
+				log.Errorf("failed to update k8s policy is propagated to k8s cluster -%v: %w", resp, err)
+			} else {
+				updateCompliancesToInventory = append(updateCompliancesToInventory, updateCompliance)
+			}
+		}
+	}
+	if len(deleteCompliances) > 0 {
+		for _, deleteCompliance := range deleteCompliances {
+			policyNamespacedName, err := getPolicyNamespacedName(db, deleteCompliance.PolicyID)
+			if err != nil {
+				log.Errorf("failed to get policy namespaced name -%v: %w", deleteCompliance.PolicyID, err)
+				continue
+			}
+			if resp, err := requester.GetHttpClient().K8SPolicyIsPropagatedToK8SClusterServiceHTTPClient.
+				DeleteK8SPolicyIsPropagatedToK8SCluster(ctx, deleteK8SPolicyIsPropagatedToK8SCluster(
+					policyNamespacedName.Name, deleteCompliance.ClusterName, leafHub, mchVersion)); err != nil {
+				log.Errorf("failed to delete k8s policy is propagated to k8s cluster -%v: %w", resp, err)
+			} else {
+				deleteCompliancesInInventory = append(deleteCompliancesInInventory, deleteCompliance)
+			}
+		}
+	}
+
+	return createCompliancesToInventory, updateCompliancesToInventory, deleteCompliancesInInventory
+}
+
+func updateK8SPolicyIsPropagatedToK8SCluster(subjectId, objectId, status, reporterInstanceId string, mchVersion string) *kesselv1betarelations.
+	UpdateK8SPolicyIsPropagatedToK8SClusterRequest {
+	var relationStatus kesselv1betarelations.K8SPolicyIsPropagatedToK8SClusterDetail_Status
+	switch status {
+	case "non_compliant":
+		relationStatus = kesselv1betarelations.K8SPolicyIsPropagatedToK8SClusterDetail_VIOLATIONS
+	case "compliant":
+		relationStatus = kesselv1betarelations.K8SPolicyIsPropagatedToK8SClusterDetail_NO_VIOLATIONS
+	default:
+		relationStatus = kesselv1betarelations.K8SPolicyIsPropagatedToK8SClusterDetail_STATUS_OTHER
+	}
+	return &kesselv1betarelations.UpdateK8SPolicyIsPropagatedToK8SClusterRequest{
+		K8SpolicyIspropagatedtoK8Scluster: &kesselv1betarelations.K8SPolicyIsPropagatedToK8SCluster{
+			Metadata: &kesselv1betarelations.Metadata{
+				RelationshipType: "k8spolicy_ispropagatedto_k8scluster",
+			},
+			ReporterData: &kesselv1betarelations.ReporterData{
+				ReporterType:           kesselv1betarelations.ReporterData_ACM,
+				ReporterInstanceId:     reporterInstanceId,
+				ReporterVersion:        mchVersion,
+				SubjectLocalResourceId: subjectId,
+				ObjectLocalResourceId:  objectId,
+			},
+			RelationshipData: &kesselv1betarelations.K8SPolicyIsPropagatedToK8SClusterDetail{
+				Status: relationStatus,
+			},
+		},
+	}
+}
+
+func deleteK8SPolicyIsPropagatedToK8SCluster(subjectId, objectId, reporterInstanceId string, mchVersion string) *kesselv1betarelations.
+	DeleteK8SPolicyIsPropagatedToK8SClusterRequest {
+	return &kesselv1betarelations.DeleteK8SPolicyIsPropagatedToK8SClusterRequest{
+		ReporterData: &kesselv1betarelations.ReporterData{
+			ReporterType:           kesselv1betarelations.ReporterData_ACM,
+			ReporterInstanceId:     reporterInstanceId,
+			ReporterVersion:        mchVersion,
+			SubjectLocalResourceId: subjectId,
+			ObjectLocalResourceId:  objectId,
+		},
+	}
+}
+
+// generateCreateUpdateCompliances compare the
+// generates the create/update/delete compliances which should post to db and inventory
+func generateCreateUpdateDeleteCompliances(
+	localCompliancesFromEvents []models.LocalStatusCompliance,
+	complianceFromDb map[database.ComplianceStatus]set.Set,
+	existClustersOnDB set.Set,
+	leafHub string,
+	policyID string,
+) (
+	[]models.LocalStatusCompliance,
+	[]models.LocalStatusCompliance,
+	[]models.LocalStatusCompliance) {
+	var clusterToComplianceMap = make(map[string]database.ComplianceStatus)
+	for _, compliance := range localCompliancesFromEvents {
+		clusterToComplianceMap[compliance.ClusterName] = compliance.Compliance
+	}
+
+	var clusterToComplianceInDbMap = make(map[string]database.ComplianceStatus)
+	for status, clusters := range complianceFromDb {
+		for _, cluster := range clusters.ToSlice() {
+			clusterToComplianceInDbMap[cluster.(string)] = status
+		}
+	}
+
+	var createCompliances []models.LocalStatusCompliance
+	var updateCompliances []models.LocalStatusCompliance
+	var deleteCompliances []models.LocalStatusCompliance
+
+	for cluster, compliance := range clusterToComplianceMap {
+		if _, ok := clusterToComplianceInDbMap[cluster]; !ok {
+			createCompliances = append(createCompliances, models.LocalStatusCompliance{
+				LeafHubName: leafHub,
+				PolicyID:    policyID,
+				ClusterName: cluster,
+				Error:       database.ErrorNone,
+				Compliance:  compliance,
+			})
+		} else if clusterToComplianceInDbMap[cluster] != compliance {
+			updateCompliances = append(updateCompliances, models.LocalStatusCompliance{
+				LeafHubName: leafHub,
+				PolicyID:    policyID,
+				ClusterName: cluster,
+				Error:       database.ErrorNone,
+				Compliance:  compliance,
+			})
+		}
+	}
+	for _, name := range existClustersOnDB.ToSlice() {
+		clusterName, ok := name.(string)
+		if !ok {
+			continue
+		}
+		deleteCompliances = append(deleteCompliances, models.LocalStatusCompliance{
+			LeafHubName: leafHub,
+			PolicyID:    policyID,
+			ClusterName: clusterName,
+		})
+	}
+	return createCompliances, updateCompliances, deleteCompliances
 }
 
 func newLocalCompliances(leafHub, policyID string, compliance database.ComplianceStatus,
@@ -186,4 +452,22 @@ func getLocalComplianceClusterSets(db *gorm.DB, query interface{}, args ...inter
 			compliance.ClusterName, compliance.Compliance)
 	}
 	return allPolicyComplianceRowsFromDB, nil
+}
+
+func getPolicyNamespacedName(db *gorm.DB, policyID string) (models.ResourceVersion, error) {
+	var policyFromDB []models.LocalSpecPolicy
+	var resourceVersions []models.ResourceVersion
+
+	err := db.Select(
+		"policy_id AS key, cluster_name AS name, payload->'metadata'->>'namespace'+ \"/\" +payload->'metadata'->>'name' AS name").
+		Where(&models.LocalSpecPolicy{
+			PolicyID: policyID,
+		}).Find(&policyFromDB).Scan(&resourceVersions).Error
+	if err != nil {
+		return models.ResourceVersion{}, err
+	}
+	if len(policyFromDB) == 0 {
+		return models.ResourceVersion{}, fmt.Errorf("policy %s not found", policyID)
+	}
+	return resourceVersions[0], nil
 }

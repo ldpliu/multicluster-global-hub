@@ -9,6 +9,7 @@ import (
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 	kessel "github.com/project-kessel/inventory-api/api/kessel/inventory/v1beta1/resources"
 	"github.com/stolostron/multicloud-operators-foundation/pkg/klusterlet/clusterclaim"
+	"github.com/stolostron/multicluster-global-hub/manager/pkg/configs"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -29,26 +30,24 @@ import (
 const BatchSize = 50
 
 type managedClusterHandler struct {
-	log                *zap.SugaredLogger
-	eventType          string
-	eventSyncMode      enum.EventSyncMode
-	eventPriority      conflator.ConflationPriority
-	requester          transport.Requester
-	enableInventoryAPI bool
-	c                  client.Client
+	log           *zap.SugaredLogger
+	eventType     string
+	eventSyncMode enum.EventSyncMode
+	eventPriority conflator.ConflationPriority
+	requester     transport.Requester
+	c             client.Client
 }
 
 func RegisterManagedClusterHandler(c client.Client, conflationManager *conflator.ConflationManager) {
 	eventType := string(enum.ManagedClusterType)
 	logName := strings.Replace(eventType, enum.EventTypePrefix, "", -1)
 	h := &managedClusterHandler{
-		log:                logger.ZapLogger(logName),
-		eventType:          eventType,
-		eventSyncMode:      enum.CompleteStateMode,
-		eventPriority:      conflator.ManagedClustersPriority,
-		requester:          conflationManager.Requster,
-		enableInventoryAPI: conflationManager.EnableInventoryAPI,
-		c:                  c,
+		log:           logger.ZapLogger(logName),
+		eventType:     eventType,
+		eventSyncMode: enum.CompleteStateMode,
+		eventPriority: conflator.ManagedClustersPriority,
+		requester:     conflationManager.Requster,
+		c:             c,
 	}
 	conflationManager.Register(conflator.NewConflationRegistration(
 		h.eventPriority,
@@ -90,18 +89,17 @@ func (h *managedClusterHandler) handleEvent(ctx context.Context, evt *cloudevent
 		return nil
 	}
 
-	// we think the data in inventory should be same as the data in the database
+	// The data in inventory should be same as the data in the database
 	// so we will post to inventory if there is some changes based on the data in database
 	// Note: we do not handle the case: when run globalhub sometimes, and the data has post
 	// database then enable inventory api
-	if h.enableInventoryAPI {
+	if configs.GetEnableInventoryAPI() {
 		requester := h.requester
 		if requester == nil {
 			return fmt.Errorf("requester is nil")
 		}
 		createClustersToInventory, updateClustersToInventory, deleteClustersFromInventory := h.postToInventoryApi(
 			ctx,
-			requester,
 			createClusters,
 			updateClusters,
 			deleteClusters,
@@ -204,7 +202,6 @@ func (h *managedClusterHandler) postToDatabase(
 
 func (h *managedClusterHandler) postToInventoryApi(
 	ctx context.Context,
-	requester transport.Requester,
 	createClusters,
 	updateClusters []clusterv1.ManagedCluster,
 	deleteClusters []models.ResourceVersion,
@@ -222,7 +219,7 @@ func (h *managedClusterHandler) postToInventoryApi(
 	if len(createClusters) > 0 {
 		for _, cluster := range createClusters {
 			k8sCluster := GetK8SCluster(ctx, &cluster, leafHubName, h.c, mchVersion)
-			if resp, err := requester.GetHttpClient().K8sClusterService.CreateK8SCluster(ctx,
+			if resp, err := h.requester.GetHttpClient().K8sClusterService.CreateK8SCluster(ctx,
 				&kessel.CreateK8SClusterRequest{K8SCluster: k8sCluster}); err != nil {
 				h.log.Errorf("failed to create k8sCluster %v: %w", resp, err)
 			} else {
@@ -234,7 +231,7 @@ func (h *managedClusterHandler) postToInventoryApi(
 	if len(updateClusters) > 0 {
 		for _, cluster := range updateClusters {
 			k8sCluster := GetK8SCluster(context.TODO(), &cluster, leafHubName, h.c, mchVersion)
-			if resp, err := requester.GetHttpClient().K8sClusterService.UpdateK8SCluster(ctx,
+			if resp, err := h.requester.GetHttpClient().K8sClusterService.UpdateK8SCluster(ctx,
 				&kessel.UpdateK8SClusterRequest{K8SCluster: k8sCluster}); err != nil {
 				h.log.Errorf("failed to update k8sCluster %v: %w", resp, err)
 			} else {
@@ -245,7 +242,7 @@ func (h *managedClusterHandler) postToInventoryApi(
 
 	if len(deleteClusters) > 0 {
 		for _, cluster := range deleteClusters {
-			if resp, err := requester.GetHttpClient().K8sClusterService.DeleteK8SCluster(ctx,
+			if resp, err := h.requester.GetHttpClient().K8sClusterService.DeleteK8SCluster(ctx,
 				&kessel.DeleteK8SClusterRequest{ReporterData: &kessel.ReporterData{
 					ReporterType:       kessel.ReporterData_ACM,
 					ReporterInstanceId: leafHubName,
@@ -448,7 +445,7 @@ func GetK8SCluster(ctx context.Context,
 func getClusterIdToVersionMap(db *gorm.DB, leafHubName string) (map[string]models.ResourceVersion, error) {
 	var resourceVersions []models.ResourceVersion
 	err := db.Select(
-		"cluster_id AS key,cluster_name AS name, payload->'metadata'->>'resourceVersion' AS resource_version").
+		"cluster_id AS key, cluster_name AS name, payload->'metadata'->>'resourceVersion' AS resource_version").
 		Where(&models.ManagedCluster{
 			LeafHubName: leafHubName,
 		}).Find(&models.ManagedCluster{}).Scan(&resourceVersions).Error
