@@ -33,8 +33,8 @@ func RegisterHandlers(mgr ctrl.Manager, cmr *conflator.ConflationManager, enable
 
 	// local policy
 	policy.RegisterLocalPolicySpecHandler(mgr.GetClient(), cmr)
-	policy.RegisterLocalPolicyComplianceHandler(cmr)
-	policy.RegisterLocalPolicyCompleteHandler(cmr)
+	policy.RegisterLocalPolicyComplianceHandler(mgr.GetClient(), cmr)
+	policy.RegisterLocalPolicyCompleteHandler(mgr.GetClient(), cmr)
 	policy.RegisterLocalRootPolicyEventHandler(cmr)
 	policy.RegisterLocalReplicatedPolicyEventHandler(cmr)
 
