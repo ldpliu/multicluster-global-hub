@@ -280,7 +280,7 @@ func Test_postPolicyToInventoryApi(t *testing.T) {
 				log:       logger.ZapLogger("test"),
 				requester: fakeRequester,
 			}
-			got, got1, got2 := h.postPolicyToInventoryApi(tt.args.ctx, tt.args.createPolicy, tt.args.updatePolicy, tt.args.deletePolicy, tt.args.leafHubName, tt.args.mchVersion)
+			got, got1, got2 := h.postPolicyToInventoryApi(tt.args.ctx, nil, tt.args.createPolicy, tt.args.updatePolicy, tt.args.deletePolicy, tt.args.leafHubName, tt.args.mchVersion)
 			if !equality.Semantic.DeepEqual(got, tt.want) {
 				t.Errorf("postPolicyToInventoryApi() got = %v, want %v", got, tt.want)
 			}

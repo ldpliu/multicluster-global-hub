@@ -105,11 +105,12 @@ func (h *localPolicySpecHandler) handleEvent(ctx context.Context, evt *cloudeven
 		clusterInfo, err := managedhub.GetClusterInfo(database.GetGorm(), leafHubName)
 		h.log.Debugf("clusterInfo: %v", clusterInfo)
 		if err != nil || clusterInfo.MchVersion == "" {
-			h.log.Errorf("failed to get cluster info from db - %v", err)
+			h.log.Warnf("failed to get cluster info from db - %v", err)
 		}
 
 		createClustersToInventory, updateClustersToInventory, deleteClustersFromInventory := h.postPolicyToInventoryApi(
 			ctx,
+			db,
 			createPolicy,
 			updatePolicy,
 			deletePolicy,
@@ -205,6 +206,7 @@ func (h *localPolicySpecHandler) postPolicyToDatabase(
 // postPolicyToInventoryApi posts the policy to inventory api
 func (h *localPolicySpecHandler) postPolicyToInventoryApi(
 	ctx context.Context,
+	db *gorm.DB,
 	createPolicy []policiesv1.Policy,
 	updatePolicy []policiesv1.Policy,
 	deletePolicy []models.ResourceVersion,
@@ -256,9 +258,72 @@ func (h *localPolicySpecHandler) postPolicyToInventoryApi(
 			} else {
 				deletePolicyInInventory = append(deletePolicyInInventory, policy)
 			}
+
+			// delete the policy related compliance data in inventory when policy is deleted
+			err := h.deleteAllComplianceDataOfPolicy(ctx, db, h.requester, leafHubName, policy, mchVersion)
+			if err != nil {
+				h.log.Errorf("failed to delete compliance data of policy %s: %w", policy.Name, err)
+			}
 		}
 	}
 	return createPolicyToInventory, updatePolicyToInventory, deletePolicyInInventory
+}
+
+func (h *localPolicySpecHandler) deleteAllComplianceDataOfPolicy(
+	ctx context.Context,
+	db *gorm.DB,
+	requester transport.Requester,
+	leafHubName string,
+	policy models.ResourceVersion,
+	mchVersion string,
+) error {
+	if requester == nil {
+		return fmt.Errorf("requester is nil")
+	}
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if configs.IsInventoryAPIEnabled() {
+		deleteCompliances, err := getComplianceDataOfPolicy(ctx, db, leafHubName, policy.Key)
+		if err != nil {
+			return err
+		}
+		if len(deleteCompliances) == 0 {
+			return nil
+		}
+		postCompliancesToInventoryApi(
+			ctx,
+			db,
+			h.log,
+			requester,
+			leafHubName,
+			nil,
+			nil,
+			deleteCompliances,
+			mchVersion,
+		)
+	}
+	return nil
+}
+
+func getComplianceDataOfPolicy(
+	ctx context.Context,
+	db *gorm.DB,
+	leafHubName string,
+	policyId string,
+) ([]models.LocalStatusCompliance, error) {
+	var complianceData []models.LocalStatusCompliance
+	err := db.Select(
+		"policy_id, cluster_name, leaf_hub_name").
+		Where(&models.LocalStatusCompliance{ // Find soft deleted records: db.Unscoped().Where(...).Find(...)
+			LeafHubName: leafHubName,
+			PolicyID:    policyId,
+		}).
+		Find(&models.LocalStatusCompliance{}).Scan(&complianceData).Error
+	if err != nil {
+		return nil, err
+	}
+	return complianceData, nil
 }
 
 func getPolicyIdToVersionMap(db *gorm.DB, leafHubName string) (map[string]models.ResourceVersion, error) {
