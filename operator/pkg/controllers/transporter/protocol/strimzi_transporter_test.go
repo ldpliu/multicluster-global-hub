@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	kafkav1beta2 "github.com/RedHatInsights/strimzi-client-go/apis/kafka.strimzi.io/v1beta2"
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -19,8 +22,10 @@ func TestNewStrimziTransporter(t *testing.T) {
 			Name:      "test-mgh",
 			Namespace: utils.GetDefaultNamespace(),
 			Annotations: map[string]string{
-				operatorconstants.CommunityCatalogSourceNameKey:      "test",
-				operatorconstants.CommunityCatalogSourceNamespaceKey: "default",
+				operatorconstants.CatalogSourceNameKey:      "test",
+				operatorconstants.CatalogSourceNamespaceKey: "default",
+				operatorconstants.SubscriptionPackageName:   "test-package",
+				operatorconstants.SubscriptionChannel:       "test-channel",
 			},
 		},
 		Spec: v1alpha4.MulticlusterGlobalHubSpec{
@@ -49,6 +54,12 @@ func TestNewStrimziTransporter(t *testing.T) {
 	if trans.subCatalogSourceNamespace != "default" {
 		t.Errorf("catalogSource name should be default, but %v", trans.subCatalogSourceNamespace)
 	}
+	if trans.subPackageName != "test-package" {
+		t.Errorf("subPackageName name should be test-package, but %v", trans.subCatalogSourceNamespace)
+	}
+	if trans.subChannel != "test-channel" {
+		t.Errorf("subChannel name should be test-channel, but %v", trans.subCatalogSourceNamespace)
+	}
 }
 
 func TestNewKafkaCluster(t *testing.T) {
@@ -66,8 +77,8 @@ func TestNewKafkaCluster(t *testing.T) {
 					Name:      "test-mgh",
 					Namespace: utils.GetDefaultNamespace(),
 					Annotations: map[string]string{
-						operatorconstants.CommunityCatalogSourceNameKey:      "test",
-						operatorconstants.CommunityCatalogSourceNamespaceKey: "default",
+						operatorconstants.CatalogSourceNameKey:      "test",
+						operatorconstants.CatalogSourceNamespaceKey: "default",
 					},
 				},
 				Spec: v1alpha4.MulticlusterGlobalHubSpec{
@@ -125,7 +136,7 @@ func TestNewKafkaCluster(t *testing.T) {
                     "memory": "128Mi"
                 }
             },
-            "version": "3.8.0"
+            "version": "3.9.0"
         }
     }
 }`,
@@ -138,8 +149,8 @@ func TestNewKafkaCluster(t *testing.T) {
 					Name:      "test-mgh",
 					Namespace: utils.GetDefaultNamespace(),
 					Annotations: map[string]string{
-						operatorconstants.CommunityCatalogSourceNameKey:      "test",
-						operatorconstants.CommunityCatalogSourceNamespaceKey: "default",
+						operatorconstants.CatalogSourceNameKey:      "test",
+						operatorconstants.CatalogSourceNamespaceKey: "default",
 					},
 				},
 				Spec: v1alpha4.MulticlusterGlobalHubSpec{
@@ -196,7 +207,7 @@ func TestNewKafkaCluster(t *testing.T) {
                     "memory": "128Mi"
                 }
             },
-            "version": "3.8.0"
+            "version": "3.9.0"
         }
     }
 }`,
@@ -210,10 +221,10 @@ func TestNewKafkaCluster(t *testing.T) {
 					Name:      "test-mgh",
 					Namespace: utils.GetDefaultNamespace(),
 					Annotations: map[string]string{
-						operatorconstants.CommunityCatalogSourceNameKey:      "test",
-						operatorconstants.CommunityCatalogSourceNamespaceKey: "default",
-						operatorconstants.KafkaUseNodeport:                   "",
-						operatorconstants.KinDClusterIPKey:                   "10.0.0.1",
+						operatorconstants.CatalogSourceNameKey:      "test",
+						operatorconstants.CatalogSourceNamespaceKey: "default",
+						operatorconstants.KafkaUseNodeport:          "",
+						operatorconstants.KinDClusterIPKey:          "10.0.0.1",
 					},
 				},
 				Spec: v1alpha4.MulticlusterGlobalHubSpec{
@@ -281,7 +292,7 @@ func TestNewKafkaCluster(t *testing.T) {
                     "memory": "128Mi"
                 }
             },
-            "version": "3.8.0"
+            "version": "3.9.0"
         }
     }
 }`,
@@ -300,6 +311,125 @@ func TestNewKafkaCluster(t *testing.T) {
 			s = strings.ReplaceAll(s, "\n", "")
 			if string(clusterBytes) != s {
 				t.Errorf("want %v, but got %v", s, string(clusterBytes))
+			}
+		})
+	}
+}
+
+func TestCombineACLs(t *testing.T) {
+	host1 := "host1"
+	host2 := "host2"
+	resourceName1 := "name1"
+	resourceName2 := "name2"
+	type testCase struct {
+		name           string
+		kafkaUserAcls  []kafkav1beta2.KafkaUserSpecAuthorizationAclsElem
+		desiredAcls    []kafkav1beta2.KafkaUserSpecAuthorizationAclsElem
+		expectedResult []kafkav1beta2.KafkaUserSpecAuthorizationAclsElem
+	}
+
+	// Test cases
+	testCases := []testCase{
+		{
+			name: "Single Acl",
+			kafkaUserAcls: []kafkav1beta2.KafkaUserSpecAuthorizationAclsElem{
+				{
+					Host: &host1,
+					Resource: kafkav1beta2.KafkaUserSpecAuthorizationAclsElemResource{
+						Type: kafkav1beta2.KafkaUserSpecAuthorizationAclsElemResourceTypeTopic,
+						Name: &resourceName1,
+					},
+					Operations: []kafkav1beta2.KafkaUserSpecAuthorizationAclsElemOperationsElem{
+						kafkav1beta2.KafkaUserSpecAuthorizationAclsElemOperationsElemRead,
+					},
+				},
+			},
+			desiredAcls: []kafkav1beta2.KafkaUserSpecAuthorizationAclsElem{
+				{
+					Host: &host1,
+					Resource: kafkav1beta2.KafkaUserSpecAuthorizationAclsElemResource{
+						Type: kafkav1beta2.KafkaUserSpecAuthorizationAclsElemResourceTypeTopic,
+						Name: &resourceName1,
+					},
+					Operations: []kafkav1beta2.KafkaUserSpecAuthorizationAclsElemOperationsElem{
+						kafkav1beta2.KafkaUserSpecAuthorizationAclsElemOperationsElemRead,
+					},
+				},
+			},
+			expectedResult: []kafkav1beta2.KafkaUserSpecAuthorizationAclsElem{
+				{
+					Host: &host1,
+					Resource: kafkav1beta2.KafkaUserSpecAuthorizationAclsElemResource{
+						Type: kafkav1beta2.KafkaUserSpecAuthorizationAclsElemResourceTypeTopic,
+						Name: &resourceName1,
+					},
+					Operations: []kafkav1beta2.KafkaUserSpecAuthorizationAclsElemOperationsElem{
+						kafkav1beta2.KafkaUserSpecAuthorizationAclsElemOperationsElemRead,
+					},
+				},
+			},
+		},
+		{
+			name: "Different Acls",
+			kafkaUserAcls: []kafkav1beta2.KafkaUserSpecAuthorizationAclsElem{
+				{
+					Host: &host1,
+					Resource: kafkav1beta2.KafkaUserSpecAuthorizationAclsElemResource{
+						Name: &resourceName1,
+						Type: kafkav1beta2.KafkaUserSpecAuthorizationAclsElemResourceTypeTopic,
+					},
+					Operations: []kafkav1beta2.KafkaUserSpecAuthorizationAclsElemOperationsElem{
+						kafkav1beta2.KafkaUserSpecAuthorizationAclsElemOperationsElemRead,
+					},
+				},
+			},
+			desiredAcls: []kafkav1beta2.KafkaUserSpecAuthorizationAclsElem{
+				{
+					Host: &host2,
+					Resource: kafkav1beta2.KafkaUserSpecAuthorizationAclsElemResource{
+						Name: &resourceName2,
+						Type: kafkav1beta2.KafkaUserSpecAuthorizationAclsElemResourceTypeTopic,
+					},
+					Operations: []kafkav1beta2.KafkaUserSpecAuthorizationAclsElemOperationsElem{
+						kafkav1beta2.KafkaUserSpecAuthorizationAclsElemOperationsElemWrite,
+					},
+				},
+			},
+			expectedResult: []kafkav1beta2.KafkaUserSpecAuthorizationAclsElem{
+				{
+					Host: &host1,
+					Resource: kafkav1beta2.KafkaUserSpecAuthorizationAclsElemResource{
+						Name: &resourceName1,
+						Type: kafkav1beta2.KafkaUserSpecAuthorizationAclsElemResourceTypeTopic,
+					},
+					Operations: []kafkav1beta2.KafkaUserSpecAuthorizationAclsElemOperationsElem{
+						kafkav1beta2.KafkaUserSpecAuthorizationAclsElemOperationsElemRead,
+					},
+				},
+				{
+					Host: &host2,
+					Resource: kafkav1beta2.KafkaUserSpecAuthorizationAclsElemResource{
+						Name: &resourceName2,
+						Type: kafkav1beta2.KafkaUserSpecAuthorizationAclsElemResourceTypeTopic,
+					},
+					Operations: []kafkav1beta2.KafkaUserSpecAuthorizationAclsElemOperationsElem{
+						kafkav1beta2.KafkaUserSpecAuthorizationAclsElemOperationsElemWrite,
+					},
+				},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := combineACLs(tc.kafkaUserAcls, tc.desiredAcls)
+
+			if diff := cmp.Diff(tc.expectedResult, result, cmpopts.SortSlices(func(x, y kafkav1beta2.KafkaUserSpecAuthorizationAclsElem) bool {
+				return *x.Host < *y.Host &&
+					*x.Resource.Name < *y.Resource.Name &&
+					x.Operations[0] < y.Operations[0]
+			})); diff != "" {
+				t.Errorf("mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
