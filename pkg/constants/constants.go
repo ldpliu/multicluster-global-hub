@@ -76,6 +76,8 @@ const (
 	GHDeployModeHosted = "hosted"
 	// GHDeployModeDefault is to install agent in default mode
 	GHDeployModeDefault = "default"
+
+	GHDeployModeNoOperator = "nooperator"
 )
 
 const (

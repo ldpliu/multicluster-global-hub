@@ -182,7 +182,9 @@ func (r *HostedAgentController) Reconcile(ctx context.Context, req ctrl.Request)
 	isHosted := false
 	needUpdate := false
 
-	if mc.Labels != nil && mc.Labels[constants.GHDeployModeLabelKey] == constants.GHDeployModeHosted {
+	if mc.Labels != nil &&
+		(mc.Labels[constants.GHDeployModeLabelKey] == constants.GHDeployModeHosted ||
+			mc.Labels[constants.GHDeployModeLabelKey] == constants.GHDeployModeNoOperator) {
 		isHosted = true
 	}
 	log.Debugf("ManagedCluster %s is hosted: %v", mc.Name, isHosted)

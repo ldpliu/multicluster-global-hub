@@ -22,7 +22,11 @@ import (
 	"github.com/stolostron/multicluster-global-hub/pkg/logger"
 )
 
-var log = logger.DefaultZapLogger()
+var (
+	log      = logger.DefaultZapLogger()
+	annkey   = "agent.open-cluster-management.io/klusterlet-config"
+	annValue = "globalhub-klusterlet-config"
+)
 
 // NewAdmissionHandler is to handle the admission webhook for placementrule and placement
 func NewAdmissionHandler(c client.Client, s *runtime.Scheme) admission.Handler {
@@ -106,6 +110,21 @@ func (a *admissionHandler) handleManagedCluster(ctx context.Context, req admissi
 		return admission.Allowed(fmt.Sprintf("The cluster %s does not have the label %s, importing as a managed cluster",
 			cluster.Name, constants.GHDeployModeLabelKey))
 	}
+	if deployMode == constants.GHDeployModeNoOperator {
+		log.Infof("The cluster %s with label %s=%s, importing as a managed cluster without operator",
+			cluster.Name, constants.GHDeployModeLabelKey, deployMode)
+		changed := a.setNoOperatorAnnotations(cluster)
+		if !changed {
+			return admission.Allowed("")
+		}
+
+		log.Infof("Add no operator annotation into managedcluster: %v", cluster.Name)
+		marshaledCluster, err := json.Marshal(cluster)
+		if err != nil {
+			return admission.Errored(http.StatusInternalServerError, err)
+		}
+		return admission.PatchResponseFromRaw(req.Object.Raw, marshaledCluster)
+	}
 
 	if deployMode != constants.GHDeployModeHosted && deployMode != constants.GHDeployModeDefault {
 		return admission.Denied(fmt.Sprintf("The cluster %s with invalid label %s=%s, only support %s and %s",
@@ -182,7 +201,9 @@ func (a *admissionHandler) isInHostedCluster(ctx context.Context, client client.
 	if err != nil {
 		return false, fmt.Errorf("failed to get managedcluster %s, err: %v", mcName, err)
 	}
-
+	if mc.Annotations[annkey] == annValue {
+		return true, nil
+	}
 	if (mc.Annotations[constants.AnnotationClusterDeployMode] == constants.ClusterDeployModeHosted) &&
 		(mc.Annotations[constants.AnnotationClusterHostingClusterName] == a.localClusterName) {
 		return true, nil
@@ -220,6 +241,17 @@ func (a *admissionHandler) setHostedAnnotations(cluster *clusterv1.ManagedCluste
 	}
 	cluster.Annotations[constants.AnnotationClusterDeployMode] = constants.ClusterDeployModeHosted
 	cluster.Annotations[constants.AnnotationClusterHostingClusterName] = a.localClusterName
+	return true
+}
+
+func (a *admissionHandler) setNoOperatorAnnotations(cluster *clusterv1.ManagedCluster) bool {
+	if cluster.Annotations[annkey] == annValue {
+		return false
+	}
+	if cluster.Annotations == nil {
+		cluster.Annotations = map[string]string{}
+	}
+	cluster.Annotations[annkey] = annValue
 	return true
 }
 
