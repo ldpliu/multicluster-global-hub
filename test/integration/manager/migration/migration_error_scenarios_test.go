@@ -82,8 +82,8 @@ var _ = Describe("Migration Error Scenarios", func() {
 					if condition.Status != metav1.ConditionFalse {
 						return fmt.Errorf("ConditionTypeValidated status expected False, got %s", condition.Status)
 					}
-					if condition.Reason != migration.ConditionReasonHubClusterNotFound {
-						return fmt.Errorf("ConditionTypeValidated reason expected %s, got %s", migration.ConditionReasonHubClusterNotFound, condition.Reason)
+					if condition.Reason != migration.ConditionReasonHubClusterInvalid {
+						return fmt.Errorf("ConditionTypeValidated reason expected %s, got %s", migration.ConditionReasonHubClusterInvalid, condition.Reason)
 					}
 					return nil
 				}, "10s", "200ms").Should(Succeed())
@@ -110,8 +110,8 @@ var _ = Describe("Migration Error Scenarios", func() {
 					if condition.Status != metav1.ConditionFalse {
 						return fmt.Errorf("ConditionTypeValidated status expected False, got %s", condition.Status)
 					}
-					if condition.Reason != migration.ConditionReasonHubClusterNotFound {
-						return fmt.Errorf("ConditionTypeValidated reason expected %s, got %s", migration.ConditionReasonHubClusterNotFound, condition.Reason)
+					if condition.Reason != migration.ConditionReasonHubClusterInvalid {
+						return fmt.Errorf("ConditionTypeValidated reason expected %s, got %s", migration.ConditionReasonHubClusterInvalid, condition.Reason)
 					}
 					return nil
 				}, "10s", "200ms").Should(Succeed())
