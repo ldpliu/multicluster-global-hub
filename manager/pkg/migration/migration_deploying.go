@@ -48,7 +48,7 @@ func (m *ClusterMigrationController) deploying(ctx context.Context,
 	// 1. source hub: start and wait the confirmation
 	if !GetStarted(string(mcm.GetUID()), fromHub, migrationv1alpha1.PhaseDeploying) {
 		log.Infof("migration deploying to source hub: %s", fromHub)
-		err := m.sendEventToSourceHub(ctx, fromHub, mcm, migrationv1alpha1.PhaseDeploying, clusters, nil, "")
+		err := m.sendEventToSourceHub(ctx, fromHub, mcm, migrationv1alpha1.PhaseDeploying, clusters, nil, "", "")
 		if err != nil {
 			condition.Message = err.Error()
 			condition.Reason = ConditionReasonError

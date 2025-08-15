@@ -102,7 +102,7 @@ func (m *ClusterMigrationController) initializing(ctx context.Context,
 	clusters := mcm.Spec.IncludedManagedClusters
 	if !GetStarted(string(mcm.GetUID()), fromHub, migrationv1alpha1.PhaseInitializing) {
 		err := m.sendEventToSourceHub(ctx, fromHub, mcm, migrationv1alpha1.PhaseInitializing, clusters,
-			bootstrapSecret, "")
+			bootstrapSecret, "", "")
 		if err != nil {
 			condition.Message = err.Error()
 			condition.Reason = ConditionReasonError
@@ -183,12 +183,13 @@ func (m *ClusterMigrationController) handleStatusWithRollback(ctx context.Contex
 // 4. MigrationCompleted: delete the items from the database
 func (m *ClusterMigrationController) sendEventToSourceHub(ctx context.Context, fromHub string,
 	migration *migrationv1alpha1.ManagedClusterMigration, stage string, managedClusters []string,
-	bootstrapSecret *corev1.Secret, rollbackStage string,
+	bootstrapSecret *corev1.Secret, rollbackStage string, placementName string,
 ) error {
 	managedClusterMigrationFromEvent := &migrationbundle.MigrationSourceBundle{
 		MigrationId:     string(migration.GetUID()),
 		Stage:           stage,
 		ToHub:           migration.Spec.To,
+		PlacementName:   placementName,
 		ManagedClusters: managedClusters,
 		BootstrapSecret: bootstrapSecret,
 		RollbackStage:   rollbackStage,
