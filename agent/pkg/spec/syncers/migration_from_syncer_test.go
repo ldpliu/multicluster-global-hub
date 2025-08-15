@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
+	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
 	operatorv1 "open-cluster-management.io/api/operator/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -48,6 +49,9 @@ func TestMigrationSourceHubSyncer(t *testing.T) {
 	}
 	if err := clusterv1.AddToScheme(scheme); err != nil {
 		t.Fatalf("Failed to add clusterv1 to scheme: %v", err)
+	}
+	if err := clusterv1beta1.AddToScheme(scheme); err != nil {
+		t.Fatalf("Failed to add clusterv1beta1 to scheme: %v", err)
 	}
 	if err := operatorv1.AddToScheme(scheme); err != nil {
 		t.Fatalf("Failed to add operatorv1 to scheme: %v", err)
@@ -626,4 +630,620 @@ func (m *ProducerMock) SendEvent(ctx context.Context, evt cloudevents.Event) err
 
 func (m *ProducerMock) Reconnect(config *transport.TransportInternalConfig, topic string) error {
 	return nil
+}
+
+// TestReportMigrationStatus tests the ReportMigrationStatus function
+func TestReportMigrationStatus(t *testing.T) {
+	tests := []struct {
+		name                string
+		migrationBundle     *migration.MigrationStatusBundle
+		transportClient     transport.TransportClient
+		version             *eventversion.Version
+		expectedError       bool
+		expectedEventType   string
+		expectedSource      string
+		expectedClusterName string
+	}{
+		{
+			name: "successful status report",
+			migrationBundle: &migration.MigrationStatusBundle{
+				MigrationId: "test-migration-123",
+				Stage:       migrationv1alpha1.PhaseInitializing,
+				ErrMessage:  "",
+			},
+			transportClient: func() transport.TransportClient {
+				producer := &ProducerMock{}
+				transportClient := &controller.TransportClient{}
+				transportClient.SetProducer(producer)
+				return transportClient
+			}(),
+			version:             eventversion.NewVersion(),
+			expectedError:       false,
+			expectedEventType:   string(enum.ManagedClusterMigrationType),
+			expectedSource:      "test-hub",
+			expectedClusterName: constants.CloudEventGlobalHubClusterName,
+		},
+		{
+			name: "status report with error message",
+			migrationBundle: &migration.MigrationStatusBundle{
+				MigrationId: "test-migration-456",
+				Stage:       migrationv1alpha1.PhaseDeploying,
+				ErrMessage:  "failed to deploy cluster",
+			},
+			transportClient: func() transport.TransportClient {
+				producer := &ProducerMock{}
+				transportClient := &controller.TransportClient{}
+				transportClient.SetProducer(producer)
+				return transportClient
+			}(),
+			version:             eventversion.NewVersion(),
+			expectedError:       false,
+			expectedEventType:   string(enum.ManagedClusterMigrationType),
+			expectedSource:      "test-hub",
+			expectedClusterName: constants.CloudEventGlobalHubClusterName,
+		},
+		{
+			name: "nil transport client",
+			migrationBundle: &migration.MigrationStatusBundle{
+				MigrationId: "test-migration-789",
+				Stage:       migrationv1alpha1.PhaseValidating,
+				ErrMessage:  "",
+			},
+			transportClient: nil,
+			version:         eventversion.NewVersion(),
+			expectedError:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set up agent config for consistent source name
+			configs.SetAgentConfig(&configs.AgentConfig{LeafHubName: "test-hub"})
+
+			ctx := context.Background()
+			err := ReportMigrationStatus(ctx, tt.transportClient, tt.migrationBundle, tt.version)
+
+			if tt.expectedError {
+				assert.NotNil(t, err)
+				assert.Contains(t, err.Error(), "transport client must not be nil")
+			} else {
+				assert.Nil(t, err)
+
+				// Verify the event was sent correctly
+				if transportClient, ok := tt.transportClient.(*controller.TransportClient); ok {
+					if producer, ok := transportClient.GetProducer().(*ProducerMock); ok {
+						sentEvent := producer.sentEvent
+						assert.NotNil(t, sentEvent)
+						assert.Equal(t, tt.expectedEventType, sentEvent.Type())
+						assert.Equal(t, tt.expectedSource, sentEvent.Source())
+						assert.Equal(t, tt.expectedClusterName, sentEvent.Extensions()[constants.CloudEventExtensionKeyClusterName])
+
+						// Verify version extension
+						versionExt := sentEvent.Extensions()[eventversion.ExtVersion]
+						assert.NotNil(t, versionExt)
+
+						// Verify the payload contains our migration bundle
+						var receivedBundle migration.MigrationStatusBundle
+						err := json.Unmarshal(sentEvent.Data(), &receivedBundle)
+						assert.Nil(t, err)
+						assert.Equal(t, tt.migrationBundle.MigrationId, receivedBundle.MigrationId)
+						assert.Equal(t, tt.migrationBundle.Stage, receivedBundle.Stage)
+						assert.Equal(t, tt.migrationBundle.ErrMessage, receivedBundle.ErrMessage)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestSendEvent tests the SendEvent function
+func TestSendEvent(t *testing.T) {
+	tests := []struct {
+		name            string
+		eventType       string
+		source          string
+		clusterName     string
+		payloadBytes    []byte
+		transportClient transport.TransportClient
+		version         *eventversion.Version
+		expectedError   bool
+	}{
+		{
+			name:         "successful event send",
+			eventType:    "test.event.type",
+			source:       "test-source",
+			clusterName:  "test-cluster",
+			payloadBytes: []byte(`{"test": "data"}`),
+			transportClient: func() transport.TransportClient {
+				producer := &ProducerMock{}
+				transportClient := &controller.TransportClient{}
+				transportClient.SetProducer(producer)
+				return transportClient
+			}(),
+			version:       eventversion.NewVersion(),
+			expectedError: false,
+		},
+		{
+			name:         "empty payload",
+			eventType:    "test.event.type",
+			source:       "test-source",
+			clusterName:  "test-cluster",
+			payloadBytes: []byte{},
+			transportClient: func() transport.TransportClient {
+				producer := &ProducerMock{}
+				transportClient := &controller.TransportClient{}
+				transportClient.SetProducer(producer)
+				return transportClient
+			}(),
+			version:       eventversion.NewVersion(),
+			expectedError: false,
+		},
+		{
+			name:            "nil transport client",
+			eventType:       "test.event.type",
+			source:          "test-source",
+			clusterName:     "test-cluster",
+			payloadBytes:    []byte(`{"test": "data"}`),
+			transportClient: nil,
+			version:         eventversion.NewVersion(),
+			expectedError:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			originalVersion := tt.version.String()
+
+			err := SendEvent(ctx, tt.transportClient, tt.eventType, tt.source, tt.clusterName, tt.payloadBytes, tt.version)
+
+			if tt.expectedError {
+				assert.NotNil(t, err)
+				assert.Contains(t, err.Error(), "transport client must not be nil")
+			} else {
+				assert.Nil(t, err)
+
+				// Verify version was incremented and progressed
+				assert.NotEqual(t, originalVersion, tt.version.String())
+
+				// Verify the event was sent correctly
+				if transportClient, ok := tt.transportClient.(*controller.TransportClient); ok {
+					if producer, ok := transportClient.GetProducer().(*ProducerMock); ok {
+						sentEvent := producer.sentEvent
+						assert.NotNil(t, sentEvent)
+						assert.Equal(t, tt.eventType, sentEvent.Type())
+						assert.Equal(t, tt.source, sentEvent.Source())
+						assert.Equal(t, tt.clusterName, sentEvent.Extensions()[constants.CloudEventExtensionKeyClusterName])
+
+						// Verify version extension was set
+						versionExt := sentEvent.Extensions()[eventversion.ExtVersion]
+						assert.NotNil(t, versionExt)
+
+						// Verify the payload
+						assert.Equal(t, tt.payloadBytes, sentEvent.Data())
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestGetClustersFromPlacementDecisions tests the getClustersFromPlacementDecisions function
+func TestGetClustersFromPlacementDecisions(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+
+	if err := clusterv1beta1.AddToScheme(scheme); err != nil {
+		t.Fatalf("Failed to add clusterv1beta1 to scheme: %v", err)
+	}
+
+	tests := []struct {
+		name             string
+		placementName    string
+		initObjects      []client.Object
+		expectedClusters []string
+		expectedError    bool
+		errorContains    string
+	}{
+		{
+			name:          "successful retrieval with multiple placement decisions",
+			placementName: "test-placement",
+			initObjects: []client.Object{
+				&clusterv1beta1.PlacementDecision{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "placement-decision-1",
+						Namespace: "default",
+						Labels: map[string]string{
+							clusterv1beta1.PlacementLabel: "test-placement",
+						},
+					},
+					Status: clusterv1beta1.PlacementDecisionStatus{
+						Decisions: []clusterv1beta1.ClusterDecision{
+							{ClusterName: "cluster1"},
+							{ClusterName: "cluster2"},
+						},
+					},
+				},
+				&clusterv1beta1.PlacementDecision{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "placement-decision-2",
+						Namespace: "default",
+						Labels: map[string]string{
+							clusterv1beta1.PlacementLabel: "test-placement",
+						},
+					},
+					Status: clusterv1beta1.PlacementDecisionStatus{
+						Decisions: []clusterv1beta1.ClusterDecision{
+							{ClusterName: "cluster3"},
+						},
+					},
+				},
+			},
+			expectedClusters: []string{"cluster1", "cluster2", "cluster3"},
+			expectedError:    false,
+		},
+		{
+			name:             "no placement decisions found",
+			placementName:    "nonexistent-placement",
+			initObjects:      []client.Object{},
+			expectedClusters: []string{},
+			expectedError:    false,
+		},
+		{
+			name:          "placement decisions with different labels",
+			placementName: "target-placement",
+			initObjects: []client.Object{
+				&clusterv1beta1.PlacementDecision{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "placement-decision-different",
+						Namespace: "default",
+						Labels: map[string]string{
+							clusterv1beta1.PlacementLabel: "different-placement",
+						},
+					},
+					Status: clusterv1beta1.PlacementDecisionStatus{
+						Decisions: []clusterv1beta1.ClusterDecision{
+							{ClusterName: "cluster-should-not-appear"},
+						},
+					},
+				},
+				&clusterv1beta1.PlacementDecision{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "placement-decision-target",
+						Namespace: "default",
+						Labels: map[string]string{
+							clusterv1beta1.PlacementLabel: "target-placement",
+						},
+					},
+					Status: clusterv1beta1.PlacementDecisionStatus{
+						Decisions: []clusterv1beta1.ClusterDecision{
+							{ClusterName: "target-cluster"},
+						},
+					},
+				},
+			},
+			expectedClusters: []string{"target-cluster"},
+			expectedError:    false,
+		},
+		{
+			name:          "placement decision with empty cluster name",
+			placementName: "test-placement",
+			initObjects: []client.Object{
+				&clusterv1beta1.PlacementDecision{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "placement-decision-empty",
+						Namespace: "default",
+						Labels: map[string]string{
+							clusterv1beta1.PlacementLabel: "test-placement",
+						},
+					},
+					Status: clusterv1beta1.PlacementDecisionStatus{
+						Decisions: []clusterv1beta1.ClusterDecision{
+							{ClusterName: "valid-cluster"},
+							{ClusterName: ""}, // This should be filtered out
+							{ClusterName: "another-valid-cluster"},
+						},
+					},
+				},
+			},
+			expectedClusters: []string{"valid-cluster", "another-valid-cluster"},
+			expectedError:    false,
+		},
+		{
+			name:          "placement decision with no decisions",
+			placementName: "empty-placement",
+			initObjects: []client.Object{
+				&clusterv1beta1.PlacementDecision{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "placement-decision-no-decisions",
+						Namespace: "default",
+						Labels: map[string]string{
+							clusterv1beta1.PlacementLabel: "empty-placement",
+						},
+					},
+					Status: clusterv1beta1.PlacementDecisionStatus{
+						Decisions: []clusterv1beta1.ClusterDecision{},
+					},
+				},
+			},
+			expectedClusters: []string{},
+			expectedError:    false,
+		},
+		{
+			name:          "placement decision without placement label",
+			placementName: "test-placement",
+			initObjects: []client.Object{
+				&clusterv1beta1.PlacementDecision{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "placement-decision-no-label",
+						Namespace: "default",
+						// No placement label
+					},
+					Status: clusterv1beta1.PlacementDecisionStatus{
+						Decisions: []clusterv1beta1.ClusterDecision{
+							{ClusterName: "orphan-cluster"},
+						},
+					},
+				},
+			},
+			expectedClusters: []string{},
+			expectedError:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(tt.initObjects...).
+				Build()
+
+			// Create the syncer instance
+			syncer := &MigrationSourceSyncer{
+				client: fakeClient,
+			}
+
+			// Call the function under test
+			clusters, err := syncer.getClustersFromPlacementDecisions(ctx, tt.placementName)
+
+			// Verify error expectations
+			if tt.expectedError {
+				assert.NotNil(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.Nil(t, err)
+			}
+
+			// Verify cluster list
+			assert.Equal(t, len(tt.expectedClusters), len(clusters), "Expected %d clusters, got %d", len(tt.expectedClusters), len(clusters))
+			assert.ElementsMatch(t, tt.expectedClusters, clusters, "Cluster lists don't match")
+		})
+	}
+}
+
+// TestValidating tests the validating function
+func TestValidating(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+
+	if err := clusterv1beta1.AddToScheme(scheme); err != nil {
+		t.Fatalf("Failed to add clusterv1beta1 to scheme: %v", err)
+	}
+
+	tests := []struct {
+		name                  string
+		migrationSourceBundle *migration.MigrationSourceBundle
+		initObjects           []client.Object
+		expectedError         bool
+		expectedErrorContains string
+		expectedEventSent     bool
+		expectedStatusBundle  *migration.MigrationStatusBundle
+	}{
+		{
+			name: "successful validation with placement name and clusters found",
+			migrationSourceBundle: &migration.MigrationSourceBundle{
+				MigrationId:   "test-migration-123",
+				Stage:         migrationv1alpha1.PhaseValidating,
+				PlacementName: "test-placement",
+			},
+			initObjects: []client.Object{
+				&clusterv1beta1.PlacementDecision{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "placement-decision-1",
+						Namespace: "default",
+						Labels: map[string]string{
+							clusterv1beta1.PlacementLabel: "test-placement",
+						},
+					},
+					Status: clusterv1beta1.PlacementDecisionStatus{
+						Decisions: []clusterv1beta1.ClusterDecision{
+							{ClusterName: "cluster1"},
+							{ClusterName: "cluster2"},
+						},
+					},
+				},
+			},
+			expectedError:     false,
+			expectedEventSent: true,
+			expectedStatusBundle: &migration.MigrationStatusBundle{
+				MigrationId:     "test-migration-123",
+				Stage:           migrationv1alpha1.PhaseValidating,
+				ManagedClusters: []string{"cluster1", "cluster2"},
+			},
+		},
+		{
+			name: "successful validation with placement name but no clusters found",
+			migrationSourceBundle: &migration.MigrationSourceBundle{
+				MigrationId:   "test-migration-456",
+				Stage:         migrationv1alpha1.PhaseValidating,
+				PlacementName: "nonexistent-placement",
+			},
+			initObjects:       []client.Object{},
+			expectedError:     false,
+			expectedEventSent: true,
+			expectedStatusBundle: &migration.MigrationStatusBundle{
+				MigrationId:     "test-migration-456",
+				Stage:           migrationv1alpha1.PhaseValidating,
+				ManagedClusters: []string{},
+			},
+		},
+		{
+			name: "successful validation with no placement name provided",
+			migrationSourceBundle: &migration.MigrationSourceBundle{
+				MigrationId:   "test-migration-789",
+				Stage:         migrationv1alpha1.PhaseValidating,
+				PlacementName: "", // Empty placement name
+			},
+			initObjects:       []client.Object{},
+			expectedError:     false,
+			expectedEventSent: false, // No event should be sent
+		},
+		{
+			name: "validation with empty cluster names filtered out",
+			migrationSourceBundle: &migration.MigrationSourceBundle{
+				MigrationId:   "test-migration-empty",
+				Stage:         migrationv1alpha1.PhaseValidating,
+				PlacementName: "test-placement",
+			},
+			initObjects: []client.Object{
+				&clusterv1beta1.PlacementDecision{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "placement-decision-empty",
+						Namespace: "default",
+						Labels: map[string]string{
+							clusterv1beta1.PlacementLabel: "test-placement",
+						},
+					},
+					Status: clusterv1beta1.PlacementDecisionStatus{
+						Decisions: []clusterv1beta1.ClusterDecision{
+							{ClusterName: "valid-cluster"},
+							{ClusterName: ""}, // This should be filtered out
+							{ClusterName: "another-valid-cluster"},
+						},
+					},
+				},
+			},
+			expectedError:     false,
+			expectedEventSent: true,
+			expectedStatusBundle: &migration.MigrationStatusBundle{
+				MigrationId:     "test-migration-empty",
+				Stage:           migrationv1alpha1.PhaseValidating,
+				ManagedClusters: []string{"valid-cluster", "another-valid-cluster"},
+			},
+		},
+		{
+			name: "validation with multiple placement decisions",
+			migrationSourceBundle: &migration.MigrationSourceBundle{
+				MigrationId:   "test-migration-multi",
+				Stage:         migrationv1alpha1.PhaseValidating,
+				PlacementName: "multi-placement",
+			},
+			initObjects: []client.Object{
+				&clusterv1beta1.PlacementDecision{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "placement-decision-1",
+						Namespace: "default",
+						Labels: map[string]string{
+							clusterv1beta1.PlacementLabel: "multi-placement",
+						},
+					},
+					Status: clusterv1beta1.PlacementDecisionStatus{
+						Decisions: []clusterv1beta1.ClusterDecision{
+							{ClusterName: "cluster1"},
+							{ClusterName: "cluster2"},
+						},
+					},
+				},
+				&clusterv1beta1.PlacementDecision{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "placement-decision-2",
+						Namespace: "default",
+						Labels: map[string]string{
+							clusterv1beta1.PlacementLabel: "multi-placement",
+						},
+					},
+					Status: clusterv1beta1.PlacementDecisionStatus{
+						Decisions: []clusterv1beta1.ClusterDecision{
+							{ClusterName: "cluster3"},
+						},
+					},
+				},
+			},
+			expectedError:     false,
+			expectedEventSent: true,
+			expectedStatusBundle: &migration.MigrationStatusBundle{
+				MigrationId:     "test-migration-multi",
+				Stage:           migrationv1alpha1.PhaseValidating,
+				ManagedClusters: []string{"cluster1", "cluster2", "cluster3"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set up agent config for consistent source name
+			configs.SetAgentConfig(&configs.AgentConfig{LeafHubName: "test-hub"})
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(tt.initObjects...).
+				Build()
+
+			// Create mock producer and transport client
+			producer := &ProducerMock{}
+			transportClient := &controller.TransportClient{}
+			transportClient.SetProducer(producer)
+
+			transportConfig := &transport.TransportInternalConfig{
+				TransportType: string(transport.Chan),
+				KafkaCredential: &transport.KafkaConfig{
+					StatusTopic: "status",
+				},
+			}
+
+			// Create the syncer instance
+			syncer := &MigrationSourceSyncer{
+				client:          fakeClient,
+				transportClient: transportClient,
+				transportConfig: transportConfig,
+				bundleVersion:   eventversion.NewVersion(),
+			}
+
+			// Call the function under test
+			err := syncer.validating(ctx, tt.migrationSourceBundle)
+
+			// Verify error expectations
+			if tt.expectedError {
+				assert.NotNil(t, err)
+				if tt.expectedErrorContains != "" {
+					assert.Contains(t, err.Error(), tt.expectedErrorContains)
+				}
+			} else {
+				assert.Nil(t, err)
+			}
+
+			// Verify event sending expectations
+			if tt.expectedEventSent {
+				assert.NotNil(t, producer.sentEvent, "Expected an event to be sent but none was sent")
+
+				if producer.sentEvent != nil {
+					// Verify the event type
+					assert.Equal(t, string(enum.ManagedClusterMigrationType), producer.sentEvent.Type())
+
+					// Verify the event data contains the expected status bundle
+					var receivedBundle migration.MigrationStatusBundle
+					err := json.Unmarshal(producer.sentEvent.Data(), &receivedBundle)
+					assert.Nil(t, err)
+
+					assert.Equal(t, tt.expectedStatusBundle.MigrationId, receivedBundle.MigrationId)
+					assert.Equal(t, tt.expectedStatusBundle.Stage, receivedBundle.Stage)
+					assert.ElementsMatch(t, tt.expectedStatusBundle.ManagedClusters, receivedBundle.ManagedClusters)
+				}
+			} else {
+				assert.Nil(t, producer.sentEvent, "Expected no event to be sent but one was sent")
+			}
+		})
+	}
 }

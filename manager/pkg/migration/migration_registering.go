@@ -44,7 +44,8 @@ func (m *ClusterMigrationController) registering(ctx context.Context,
 	defer m.handleStatusWithRollback(ctx, mcm, &condition, &nextPhase, registeringTimeout)
 
 	fromHub := mcm.Spec.From
-	clusters := mcm.Spec.IncludedManagedClusters
+	clusters := managedClusterList[string(mcm.UID)]
+
 	if !GetStarted(string(mcm.GetUID()), fromHub, migrationv1alpha1.PhaseRegistering) {
 		log.Infof("migration registering: %s", fromHub)
 		// notify the source hub to start registering

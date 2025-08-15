@@ -165,3 +165,216 @@ func TestEventStatusEdgeCases(t *testing.T) {
 		t.Run(tt.name, tt.testFunc)
 	}
 }
+
+// TestGetClusterList tests the GetClusterList function
+func TestGetClusterList(t *testing.T) {
+	tests := []struct {
+		name           string
+		migrationID    string
+		hub            string
+		phase          string
+		setupClusters  []string
+		expectedResult []string
+		shouldSetup    bool
+	}{
+		{
+			name:           "valid migration with cluster list",
+			migrationID:    "test-migration-with-clusters",
+			hub:            "source-hub",
+			phase:          migrationv1alpha1.PhaseValidating,
+			setupClusters:  []string{"cluster1", "cluster2", "cluster3"},
+			expectedResult: []string{"cluster1", "cluster2", "cluster3"},
+			shouldSetup:    true,
+		},
+		{
+			name:           "valid migration with empty cluster list",
+			migrationID:    "test-migration-empty-clusters",
+			hub:            "source-hub",
+			phase:          migrationv1alpha1.PhaseInitializing,
+			setupClusters:  []string{},
+			expectedResult: []string{},
+			shouldSetup:    true,
+		},
+		{
+			name:           "valid migration with single cluster",
+			migrationID:    "test-migration-single-cluster",
+			hub:            "target-hub",
+			phase:          migrationv1alpha1.PhaseDeploying,
+			setupClusters:  []string{"single-cluster"},
+			expectedResult: []string{"single-cluster"},
+			shouldSetup:    true,
+		},
+		{
+			name:           "non-existent migration",
+			migrationID:    "non-existent-migration",
+			hub:            "any-hub",
+			phase:          migrationv1alpha1.PhaseValidating,
+			setupClusters:  nil,
+			expectedResult: nil,
+			shouldSetup:    false,
+		},
+		{
+			name:           "valid migration but non-existent hub-phase combination",
+			migrationID:    "test-migration-wrong-phase",
+			hub:            "wrong-hub",
+			phase:          "wrong-phase",
+			setupClusters:  nil,
+			expectedResult: nil,
+			shouldSetup:    true,
+		},
+		{
+			name:           "valid migration with nil cluster list initially",
+			migrationID:    "test-migration-nil-clusters",
+			hub:            "test-hub",
+			phase:          migrationv1alpha1.PhaseRegistering,
+			setupClusters:  nil,
+			expectedResult: nil,
+			shouldSetup:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Setup migration status if needed
+			if tt.shouldSetup {
+				AddMigrationStatus(tt.migrationID)
+				if tt.setupClusters != nil {
+					SetClusterList(tt.migrationID, tt.hub, tt.phase, tt.setupClusters)
+				}
+			}
+
+			// Test GetClusterList
+			result := GetClusterList(tt.migrationID, tt.hub, tt.phase)
+
+			// Verify result
+			if tt.expectedResult == nil {
+				assert.Nil(t, result, "Expected nil result for migration %s, hub %s, phase %s", tt.migrationID, tt.hub, tt.phase)
+			} else {
+				assert.Equal(t, tt.expectedResult, result, "Cluster list mismatch for migration %s, hub %s, phase %s", tt.migrationID, tt.hub, tt.phase)
+			}
+
+			// Cleanup if migration was created
+			if tt.shouldSetup {
+				RemoveMigrationStatus(tt.migrationID)
+			}
+		})
+	}
+}
+
+// TestSetAndGetClusterListConcurrency tests SetClusterList and GetClusterList functions for concurrent access
+func TestSetAndGetClusterListConcurrency(t *testing.T) {
+	migrationID := "test-migration-concurrency"
+	hub := "test-hub"
+	phase := migrationv1alpha1.PhaseValidating
+
+	// Setup migration
+	AddMigrationStatus(migrationID)
+	defer RemoveMigrationStatus(migrationID)
+
+	// Test basic SetClusterList and GetClusterList functionality
+	testClusters := []string{"cluster-a", "cluster-b", "cluster-c"}
+
+	// Set cluster list
+	SetClusterList(migrationID, hub, phase, testClusters)
+
+	// Get cluster list and verify
+	result := GetClusterList(migrationID, hub, phase)
+	assert.Equal(t, testClusters, result, "SetClusterList and GetClusterList should work correctly")
+
+	// Test updating cluster list
+	updatedClusters := []string{"cluster-x", "cluster-y"}
+	SetClusterList(migrationID, hub, phase, updatedClusters)
+
+	result = GetClusterList(migrationID, hub, phase)
+	assert.Equal(t, updatedClusters, result, "Updated cluster list should be reflected")
+
+	// Test different hub-phase combinations
+	differentHub := "different-hub"
+	differentPhase := migrationv1alpha1.PhaseDeploying
+	differentClusters := []string{"diff-cluster-1", "diff-cluster-2"}
+
+	SetClusterList(migrationID, differentHub, differentPhase, differentClusters)
+
+	// Original should remain unchanged
+	result = GetClusterList(migrationID, hub, phase)
+	assert.Equal(t, updatedClusters, result, "Original cluster list should remain unchanged")
+
+	// New combination should have new clusters
+	result = GetClusterList(migrationID, differentHub, differentPhase)
+	assert.Equal(t, differentClusters, result, "Different hub-phase should have different cluster list")
+}
+
+// TestGetClusterListEdgeCases tests edge cases for GetClusterList function
+func TestGetClusterListEdgeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		testFunc func(t *testing.T)
+	}{
+		{
+			name: "empty migration ID",
+			testFunc: func(t *testing.T) {
+				result := GetClusterList("", "hub", "phase")
+				assert.Nil(t, result, "GetClusterList should return nil for empty migration ID")
+			},
+		},
+		{
+			name: "empty hub name",
+			testFunc: func(t *testing.T) {
+				migrationID := "test-empty-hub"
+				AddMigrationStatus(migrationID)
+				defer RemoveMigrationStatus(migrationID)
+
+				result := GetClusterList(migrationID, "", "phase")
+				assert.Nil(t, result, "GetClusterList should return nil for empty hub name")
+			},
+		},
+		{
+			name: "empty phase",
+			testFunc: func(t *testing.T) {
+				migrationID := "test-empty-phase"
+				AddMigrationStatus(migrationID)
+				defer RemoveMigrationStatus(migrationID)
+
+				result := GetClusterList(migrationID, "hub", "")
+				assert.Nil(t, result, "GetClusterList should return nil for empty phase")
+			},
+		},
+		{
+			name: "special characters in parameters",
+			testFunc: func(t *testing.T) {
+				migrationID := "test-special-chars-123"
+				hub := "hub-with-special_chars.test"
+				phase := "phase-with-dashes_and_underscores"
+				clusters := []string{"cluster-1", "cluster_2", "cluster.3"}
+
+				AddMigrationStatus(migrationID)
+				defer RemoveMigrationStatus(migrationID)
+
+				SetClusterList(migrationID, hub, phase, clusters)
+				result := GetClusterList(migrationID, hub, phase)
+				assert.Equal(t, clusters, result, "GetClusterList should handle special characters correctly")
+			},
+		},
+		{
+			name: "very long cluster names",
+			testFunc: func(t *testing.T) {
+				migrationID := "test-long-names"
+				hub := "hub"
+				phase := "phase"
+				longClusterName := "very-long-cluster-name-that-exceeds-normal-length-expectations-and-continues-for-a-very-long-time-to-test-edge-cases"
+				clusters := []string{longClusterName, "normal-cluster"}
+
+				AddMigrationStatus(migrationID)
+				defer RemoveMigrationStatus(migrationID)
+
+				SetClusterList(migrationID, hub, phase, clusters)
+				result := GetClusterList(migrationID, hub, phase)
+				assert.Equal(t, clusters, result, "GetClusterList should handle long cluster names correctly")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, tt.testFunc)
+	}
+}

@@ -22,6 +22,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
+	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -94,8 +95,11 @@ func (s *MigrationSourceSyncer) Sync(ctx context.Context, evt *cloudevents.Event
 
 // handleStage processes different migration stages
 func (s *MigrationSourceSyncer) handleStage(ctx context.Context, event *migration.MigrationSourceBundle) error {
-	// Handle initializing stage first (sets current migration ID)
-	if event.Stage == migrationv1alpha1.PhaseInitializing {
+	// sets current migration ID:
+	// - use placement-> in validating phase
+	// - use clusterName -> in initialize phase
+	if event.Stage == migrationv1alpha1.PhaseValidating ||
+		(event.Stage == migrationv1alpha1.PhaseInitializing && event.PlacementName == "") {
 		s.currentMigrationId = event.MigrationId
 		s.bundleVersion.Reset()
 	}
@@ -108,6 +112,8 @@ func (s *MigrationSourceSyncer) handleStage(ctx context.Context, event *migratio
 	}
 
 	switch event.Stage {
+	case migrationv1alpha1.PhaseValidating:
+		return s.executeStage(ctx, event, s.validating)
 	case migrationv1alpha1.PhaseInitializing:
 		return s.executeStage(ctx, event, s.initializing)
 	case migrationv1alpha1.PhaseDeploying:
@@ -679,4 +685,59 @@ func (s *MigrationSourceSyncer) cleanupSingleCluster(ctx context.Context, cluste
 		log.Infof("deleted managed cluster %s", clusterName)
 	}
 	return nil
+}
+
+// validating handles the validating phase - get clusters from placement decisions and send to status bundle
+func (s *MigrationSourceSyncer) validating(ctx context.Context, source *migration.MigrationSourceBundle) error {
+	// If placement name is provided, get clusters from placement decisions
+	if source.PlacementName != "" {
+		clusters, err := s.getClustersFromPlacementDecisions(ctx, source.PlacementName)
+		if err != nil {
+			return fmt.Errorf("failed to get clusters from placement decisions: %w", err)
+		}
+
+		// Send clusters back via status bundle
+		statusBundle := &migration.MigrationStatusBundle{
+			MigrationId:     source.MigrationId,
+			Stage:           source.Stage,
+			ManagedClusters: clusters,
+		}
+
+		return s.sendStatusBundle(ctx, statusBundle)
+	}
+
+	log.Infof("no placement name provided for migration %s", source.MigrationId)
+	return nil
+}
+
+// getClustersFromPlacementDecisions retrieves cluster list from placement decisions
+func (s *MigrationSourceSyncer) getClustersFromPlacementDecisions(ctx context.Context, placementName string) ([]string, error) {
+	// List placement decisions that match the placement name
+	placementDecisions := &clusterv1beta1.PlacementDecisionList{}
+	err := s.client.List(ctx, placementDecisions,
+		client.MatchingLabels{clusterv1beta1.PlacementLabel: placementName})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list placement decisions for placement %s: %w", placementName, err)
+	}
+
+	var clusters []string
+	for _, decision := range placementDecisions.Items {
+		for _, clusterDecision := range decision.Status.Decisions {
+			if clusterDecision.ClusterName != "" {
+				clusters = append(clusters, clusterDecision.ClusterName)
+			}
+		}
+	}
+
+	log.Infof("found %d clusters from placement decisions for placement %s: %v", len(clusters), placementName, clusters)
+	return clusters, nil
+}
+
+// sendStatusBundle sends the status bundle back to the global hub
+func (s *MigrationSourceSyncer) sendStatusBundle(ctx context.Context, statusBundle *migration.MigrationStatusBundle) error {
+	return ReportMigrationStatus(
+		cecontext.WithTopic(ctx, s.transportConfig.KafkaCredential.StatusTopic),
+		s.transportClient,
+		statusBundle,
+		s.bundleVersion)
 }

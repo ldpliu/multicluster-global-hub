@@ -39,6 +39,9 @@ const (
 	bootstrapSecretNamePrefix  = "bootstrap-"
 )
 
+// managedClusterList store the migration clusters for each migration
+var managedClusterList map[string][]string
+
 var (
 	cleaningTimeout       = 10 * time.Minute // Separate timeout for cleaning phase
 	migrationStageTimeout = 5 * time.Minute  // Default timeout for most migration stages

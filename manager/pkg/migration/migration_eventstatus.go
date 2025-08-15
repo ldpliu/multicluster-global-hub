@@ -15,9 +15,10 @@ type MigrationStatus struct {
 }
 
 type StageState struct {
-	started  bool
-	finished bool
-	error    string
+	started         bool
+	finished        bool
+	error           string
+	managedClusters []string
 }
 
 // AddMigrationStatus init the migration status for the migrationId
@@ -87,6 +88,15 @@ func SetFinished(migrationId, hub, phase string) {
 	}
 }
 
+// SetClusterList sets the managed clusters list for the given migration stage
+func SetClusterList(migrationId, hub, phase string, managedClusters []string) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if p := getStageState(migrationId, hub, phase); p != nil {
+		p.managedClusters = managedClusters
+	}
+}
+
 func SetErrorMessage(migrationId, hub, phase, errMessage string) {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -122,4 +132,14 @@ func GetErrorMessage(migrationId, hub, phase string) string {
 		return p.error
 	}
 	return ""
+}
+
+// GetClusterList returns the managed clusters list for the given migration stage
+func GetClusterList(migrationId, hub, phase string) []string {
+	mu.RLock()
+	defer mu.RUnlock()
+	if p := getStageState(migrationId, hub, phase); p != nil {
+		return p.managedClusters
+	}
+	return nil
 }

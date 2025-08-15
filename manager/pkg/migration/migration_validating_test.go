@@ -553,3 +553,195 @@ func TestGetAndValidateHubCluster(t *testing.T) {
 		})
 	}
 }
+
+// TestGetMigrationClusters tests the getMigrationClusters function
+func TestGetMigrationClusters(t *testing.T) {
+	// Setup controller with mock producer
+	controller := &ClusterMigrationController{
+		Producer: &MockProducer{},
+	}
+
+	tests := []struct {
+		name                 string
+		migration            *migrationv1alpha1.ManagedClusterMigration
+		setupManagedClusters []string
+		setupMigrationStatus bool
+		setupErrorMessage    string
+		setupClusterList     []string
+		expectedClusters     []string
+		expectedError        bool
+	}{
+		{
+			name: "Should return cached clusters from managedClusterList",
+			migration: &migrationv1alpha1.ManagedClusterMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-migration-cached",
+					Namespace: utils.GetDefaultNamespace(),
+					UID:       types.UID("cached-uid"),
+				},
+				Spec: migrationv1alpha1.ManagedClusterMigrationSpec{
+					From: "source-hub",
+					To:   "target-hub",
+				},
+			},
+			setupManagedClusters: []string{"cached-cluster1", "cached-cluster2"},
+			expectedClusters:     []string{"cached-cluster1", "cached-cluster2"},
+			expectedError:        false,
+		},
+		{
+			name: "Should return spec clusters when no cached clusters",
+			migration: &migrationv1alpha1.ManagedClusterMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-migration-spec",
+					Namespace: utils.GetDefaultNamespace(),
+					UID:       types.UID("spec-uid"),
+				},
+				Spec: migrationv1alpha1.ManagedClusterMigrationSpec{
+					From:                    "source-hub",
+					To:                      "target-hub",
+					IncludedManagedClusters: []string{"spec-cluster1", "spec-cluster2"},
+				},
+			},
+			expectedClusters: []string{"spec-cluster1", "spec-cluster2"},
+			expectedError:    false,
+		},
+		{
+			name: "Should handle placement reference without error",
+			migration: &migrationv1alpha1.ManagedClusterMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-migration-placement",
+					Namespace: utils.GetDefaultNamespace(),
+					UID:       types.UID("placement-uid"),
+				},
+				Spec: migrationv1alpha1.ManagedClusterMigrationSpec{
+					From:                                "source-hub",
+					To:                                  "target-hub",
+					IncludedManagedClustersPlacementRef: "test-placement",
+				},
+			},
+			setupMigrationStatus: true,
+			setupClusterList:     []string{"placement-cluster1", "placement-cluster2"},
+			expectedClusters:     []string{"placement-cluster1", "placement-cluster2"},
+			expectedError:        false,
+		},
+		{
+			name: "Should return error when placement has error message",
+			migration: &migrationv1alpha1.ManagedClusterMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-migration-error",
+					Namespace: utils.GetDefaultNamespace(),
+					UID:       types.UID("error-uid"),
+				},
+				Spec: migrationv1alpha1.ManagedClusterMigrationSpec{
+					From:                                "source-hub",
+					To:                                  "target-hub",
+					IncludedManagedClustersPlacementRef: "error-placement",
+				},
+			},
+			setupMigrationStatus: true,
+			setupErrorMessage:    "placement error occurred",
+			expectedClusters:     nil,
+			expectedError:        true,
+		},
+		{
+			name: "Should return nil when no clusters available for placement",
+			migration: &migrationv1alpha1.ManagedClusterMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-migration-empty",
+					Namespace: utils.GetDefaultNamespace(),
+					UID:       types.UID("empty-uid"),
+				},
+				Spec: migrationv1alpha1.ManagedClusterMigrationSpec{
+					From:                                "source-hub",
+					To:                                  "target-hub",
+					IncludedManagedClustersPlacementRef: "empty-placement",
+				},
+			},
+			setupMigrationStatus: true,
+			setupClusterList:     []string{},
+			expectedClusters:     nil,
+			expectedError:        false,
+		},
+		{
+			name: "Should prefer cached clusters over spec clusters",
+			migration: &migrationv1alpha1.ManagedClusterMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-migration-priority",
+					Namespace: utils.GetDefaultNamespace(),
+					UID:       types.UID("priority-uid"),
+				},
+				Spec: migrationv1alpha1.ManagedClusterMigrationSpec{
+					From:                    "source-hub",
+					To:                      "target-hub",
+					IncludedManagedClusters: []string{"spec-cluster1", "spec-cluster2"},
+				},
+			},
+			setupManagedClusters: []string{"cached-cluster1", "cached-cluster2"},
+			expectedClusters:     []string{"cached-cluster1", "cached-cluster2"},
+			expectedError:        false,
+		},
+		{
+			name: "Should return nil when no clusters available anywhere",
+			migration: &migrationv1alpha1.ManagedClusterMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-migration-none",
+					Namespace: utils.GetDefaultNamespace(),
+					UID:       types.UID("none-uid"),
+				},
+				Spec: migrationv1alpha1.ManagedClusterMigrationSpec{
+					From: "source-hub",
+					To:   "target-hub",
+				},
+			},
+			expectedClusters: nil,
+			expectedError:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Setup global managedClusterList if needed
+			if tt.setupManagedClusters != nil {
+				if managedClusterList == nil {
+					managedClusterList = make(map[string][]string)
+				}
+				managedClusterList[string(tt.migration.UID)] = tt.setupManagedClusters
+			}
+
+			// Setup migration status if needed
+			if tt.setupMigrationStatus {
+				AddMigrationStatus(string(tt.migration.UID))
+				if tt.setupErrorMessage != "" {
+					SetErrorMessage(string(tt.migration.UID), tt.migration.Spec.From, migrationv1alpha1.PhaseValidating, tt.setupErrorMessage)
+				}
+				if tt.setupClusterList != nil {
+					SetClusterList(string(tt.migration.UID), tt.migration.Spec.From, migrationv1alpha1.PhaseValidating, tt.setupClusterList)
+				}
+			}
+
+			// Call the function under test
+			result, err := controller.getMigrationClusters(context.TODO(), tt.migration)
+
+			// Verify results
+			if tt.expectedError {
+				assert.Error(t, err, "Expected error for test case: %s", tt.name)
+				assert.Nil(t, result, "Expected nil result when error occurs")
+			} else {
+				assert.NoError(t, err, "Expected no error for test case: %s", tt.name)
+				if tt.expectedClusters == nil {
+					assert.Nil(t, result, "Expected nil result for test case: %s", tt.name)
+				} else {
+					assert.Equal(t, tt.expectedClusters, result, "Cluster list mismatch for test case: %s", tt.name)
+				}
+			}
+
+			// Cleanup
+			if tt.setupManagedClusters != nil {
+				delete(managedClusterList, string(tt.migration.UID))
+			}
+			if tt.setupMigrationStatus {
+				RemoveMigrationStatus(string(tt.migration.UID))
+			}
+		})
+	}
+}
