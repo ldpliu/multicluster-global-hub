@@ -62,7 +62,7 @@ func (m *ClusterMigrationController) cleaning(ctx context.Context,
 	bootstrapSecret := getBootstrapSecret(mcm.Spec.To, nil)
 	if !GetStarted(string(mcm.GetUID()), fromHub, migrationv1alpha1.PhaseCleaning) {
 		if err := m.sendEventToSourceHub(ctx, fromHub, mcm, migrationv1alpha1.PhaseCleaning, clusters,
-			bootstrapSecret, ""); err != nil {
+			bootstrapSecret, "", ""); err != nil {
 			condition.Message = fmt.Sprintf("failed to send cleanup event to source hub %s: %v", fromHub, err)
 			condition.Reason = ConditionReasonError
 			return false, nil // Let defer handle the status update

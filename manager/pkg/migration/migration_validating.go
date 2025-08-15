@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
+	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	migrationv1alpha1 "github.com/stolostron/multicluster-global-hub/operator/api/migration/v1alpha1"
@@ -36,6 +37,10 @@ const (
 	// Managed cluster conditions
 	conditionTypeAvailable = "ManagedClusterConditionAvailable"
 )
+
+var managedClusterList map[string][]string
+
+var placementName = "migration"
 
 // Only configmap and secret are allowed
 var AllowedKinds = map[string]bool{
@@ -127,11 +132,87 @@ func (m *ClusterMigrationController) validating(ctx context.Context,
 
 	log.Info("migration validating clusters")
 
+	// Get migrate clusters
+	clusters, err := m.getMigrationClusters(ctx, mcm)
+	if err != nil {
+		return false, nil
+	}
+
+	// Initialize managedClusterList if nil
+	if managedClusterList == nil {
+		managedClusterList = make(map[string][]string)
+	}
+
+	// Store clusters for this migration
+	managedClusterList[string(mcm.UID)] = clusters
+
+	// should reconcile when no managedcluster found
+	if len(clusters) == 0 {
+		return true, nil
+	}
+
 	// verify managedclusters
 	if err = m.validateClustersForMigration(mcm, &condition); err != nil {
 		return false, nil
 	}
 	return true, nil
+}
+
+func (m *ClusterMigrationController) getMigrationClusters(ctx context.Context, mcm *migrationv1alpha1.ManagedClusterMigration) ([]string, error) {
+	migrationUID := string(mcm.UID)
+
+	// First, check if we already have clusters stored for this migration
+	if managedClusterList != nil && len(managedClusterList[migrationUID]) != 0 {
+		return managedClusterList[migrationUID], nil
+	}
+
+	// Fallback to spec if available
+	if len(mcm.Spec.IncludedManagedClusters) != 0 {
+		return mcm.Spec.IncludedManagedClusters, nil
+	}
+
+	// If placement is specified, send event to source hub and get placement name from bundle
+	if placementName != "" {
+		//		placementName = mcm.Spec.Placement
+		err := m.sendEventToSourceHub(ctx, mcm.Spec.From, mcm, migrationv1alpha1.PhaseValidating,
+			nil, nil, "", placementName)
+		if err != nil {
+			return nil, err
+		}
+		log.Infof("sent validating events to source hubs: %s with placement: %s", mcm.Spec.From, placementName)
+	}
+
+	// try to get clusters from MigrationStatusBundle
+	clusters := GetClusterList(string(mcm.UID), mcm.Spec.From, migrationv1alpha1.PhaseValidating)
+	if len(clusters) > 0 {
+		return clusters, nil
+	}
+
+	return nil, fmt.Errorf("IncludedManagedClusters or Placement must be set")
+}
+
+// getClustersFromPlacementDecisions retrieves cluster list from placement decisions
+func (m *ClusterMigrationController) getClustersFromPlacementDecisions(ctx context.Context, placementName, namespace string) ([]string, error) {
+	// List placement decisions that match the placement name
+	placementDecisions := &clusterv1beta1.PlacementDecisionList{}
+	err := m.Client.List(ctx, placementDecisions,
+		client.InNamespace(namespace),
+		client.MatchingLabels{clusterv1beta1.PlacementLabel: placementName})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list placement decisions for placement %s: %w", placementName, err)
+	}
+
+	var clusters []string
+	for _, decision := range placementDecisions.Items {
+		for _, clusterDecision := range decision.Status.Decisions {
+			if clusterDecision.ClusterName != "" {
+				clusters = append(clusters, clusterDecision.ClusterName)
+			}
+		}
+	}
+
+	log.Infof("found %d clusters from placement decisions for placement %s: %v", len(clusters), placementName, clusters)
+	return clusters, nil
 }
 
 // IsValidResource checks format kind/namespace/name
