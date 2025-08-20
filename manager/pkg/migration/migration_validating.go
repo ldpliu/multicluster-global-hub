@@ -9,11 +9,13 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	migrationv1alpha1 "github.com/stolostron/multicluster-global-hub/operator/api/migration/v1alpha1"
 	"github.com/stolostron/multicluster-global-hub/pkg/constants"
@@ -132,7 +134,7 @@ func (m *ClusterMigrationController) validating(ctx context.Context,
 	log.Info("migration validating clusters")
 
 	// Get migrate clusters
-	clusters, err := m.getMigrationClusters(ctx, mcm)
+	clusters, err := m.getClustersFromConfigMapOrMigration(ctx, mcm)
 	if err != nil {
 		return requeue, nil
 	}
@@ -420,4 +422,126 @@ func isHubCluster(ctx context.Context, c client.Client, mc *clusterv1.ManagedClu
 		}
 	}
 	return false
+}
+
+// getClustersFromConfigMapOrMigration gets clusters from ConfigMap if it exists,
+// otherwise gets clusters using getMigrationClusters function and stores them in ConfigMap
+func (m *ClusterMigrationController) getClustersFromConfigMapOrMigration(ctx context.Context,
+	migration *migrationv1alpha1.ManagedClusterMigration,
+) ([]string, error) {
+	configMapName := migration.Name
+	namespace := utils.GetDefaultNamespace()
+
+	// Try to get clusters from existing ConfigMap first
+	clusters, err := m.getClustersFromExistingConfigMap(ctx, configMapName, namespace, migration.Name)
+	if err != nil {
+		return nil, err
+	}
+	if len(clusters) != 0 {
+		return clusters, nil
+	}
+
+	// ConfigMap doesn't exist or has no clusters data, get clusters using getMigrationClusters
+	clusters, err = m.getMigrationClusters(ctx, migration)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get migration clusters: %w", err)
+	}
+
+	// If no clusters found, return empty slice (no need to create ConfigMap yet)
+	if len(clusters) == 0 {
+		return nil, nil
+	}
+
+	// Store clusters in ConfigMap
+	if err := m.storeClustersToConfigMap(ctx, migration, clusters); err != nil {
+		return nil, fmt.Errorf("failed to store clusters to ConfigMap: %w", err)
+	}
+
+	return clusters, nil
+}
+
+// storeClustersToConfigMap creates or updates a ConfigMap with the clusters data for the migration
+// The ConfigMap is named with the migration name and has owner reference to the migration object
+func (m *ClusterMigrationController) storeClustersToConfigMap(ctx context.Context,
+	migration *migrationv1alpha1.ManagedClusterMigration, clusters []string,
+) error {
+	configMapName := migration.Name
+	namespace := utils.GetDefaultNamespace()
+
+	clustersData, err := json.Marshal(clusters)
+	if err != nil {
+		return fmt.Errorf("failed to marshal clusters data: %w", err)
+	}
+
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configMapName,
+			Namespace: namespace,
+		},
+		Data: map[string]string{
+			"clusters": string(clustersData),
+		},
+	}
+
+	// Set owner reference to the migration object
+	if err := controllerutil.SetOwnerReference(migration, configMap, m.Scheme); err != nil {
+		return fmt.Errorf("failed to set owner reference: %w", err)
+	}
+
+	// Create or update the ConfigMap
+	existingConfigMap := &corev1.ConfigMap{}
+	err = m.Get(ctx, client.ObjectKeyFromObject(configMap), existingConfigMap)
+	if err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("failed to get existing ConfigMap: %w", err)
+		}
+		// ConfigMap doesn't exist, create it
+		if err := m.Create(ctx, configMap); err != nil {
+			return fmt.Errorf("failed to create ConfigMap %s/%s: %w", namespace, configMapName, err)
+		}
+		log.Infof("created ConfigMap %s/%s with clusters data for migration %s", namespace, configMapName, migration.Name)
+	} else {
+		// ConfigMap exists, update it
+		existingConfigMap.Data = configMap.Data
+		// Ensure owner reference is set on existing ConfigMap
+		if err := controllerutil.SetControllerReference(migration, existingConfigMap, m.Scheme); err != nil {
+			return fmt.Errorf("failed to set owner reference on existing ConfigMap: %w", err)
+		}
+		if err := m.Update(ctx, existingConfigMap); err != nil {
+			return fmt.Errorf("failed to update ConfigMap %s/%s: %w", namespace, configMapName, err)
+		}
+		log.Infof("updated ConfigMap %s/%s with clusters data for migration %s", namespace, configMapName, migration.Name)
+	}
+
+	return nil
+}
+
+// getClustersFromExistingConfigMap attempts to retrieve clusters from an existing ConfigMap
+// Returns clusters slice, found boolean, and error
+func (m *ClusterMigrationController) getClustersFromExistingConfigMap(ctx context.Context,
+	configMapName, namespace, migrationName string,
+) ([]string, error) {
+	existingConfigMap := &corev1.ConfigMap{}
+	err := m.Get(ctx, client.ObjectKey{
+		Name:      configMapName,
+		Namespace: namespace,
+	}, existingConfigMap)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	// ConfigMap exists, get clusters from it
+	if clustersJSON, exists := existingConfigMap.Data["clusters"]; exists {
+		var clusters []string
+		if err := json.Unmarshal([]byte(clustersJSON), &clusters); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal clusters from ConfigMap: %w", err)
+		}
+		log.Infof("retrieved clusters from existing ConfigMap %s/%s for migration %s", namespace, configMapName, migrationName)
+		return clusters, nil
+	}
+
+	return nil, nil
 }

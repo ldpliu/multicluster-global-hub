@@ -12,6 +12,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
@@ -57,6 +58,7 @@ type ClusterMigrationController struct {
 	BootstrapSecret *corev1.Secret
 	managerConfigs  *configs.ManagerConfig
 	EventRecorder   record.EventRecorder
+	Scheme          *runtime.Scheme
 }
 
 func NewMigrationController(client client.Client, producer transport.Producer,
@@ -72,6 +74,7 @@ func NewMigrationController(client client.Client, producer transport.Producer,
 
 // SetupWithManager sets up the controller with the Manager.
 func (m *ClusterMigrationController) SetupWithManager(mgr ctrl.Manager) error {
+	m.Scheme = mgr.GetScheme()
 	return ctrl.NewControllerManagedBy(mgr).Named("migration-ctrl").
 		For(&migrationv1alpha1.ManagedClusterMigration{}).
 		Watches(&v1beta1.ManagedServiceAccount{},
