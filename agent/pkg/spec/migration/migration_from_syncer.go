@@ -55,16 +55,19 @@ type MigrationSourceSyncer struct {
 	transportConfig    *transport.TransportInternalConfig
 	bundleVersion      *eventversion.Version
 	currentMigrationId string
+	hubName            string
 	managedClusters    []string
 	errList            []string
 }
 
 func NewMigrationSourceSyncer(client client.Client, restConfig *rest.Config,
+	hubName string,
 	transportClient transport.TransportClient, transportConfig *transport.TransportInternalConfig,
 ) *MigrationSourceSyncer {
 	return &MigrationSourceSyncer{
 		client:          client,
 		restConfig:      restConfig,
+		hubName:         hubName,
 		transportClient: transportClient,
 		transportConfig: transportConfig,
 		bundleVersion:   eventversion.NewVersion(),
@@ -693,7 +696,6 @@ func (s *MigrationSourceSyncer) validating(ctx context.Context, source *migratio
 			return fmt.Errorf("failed to get clusters from placement decisions: %w", err)
 		}
 		s.managedClusters = clusters
-		return nil
 	} else {
 		s.managedClusters = source.ManagedClusters
 	}
@@ -710,25 +712,13 @@ func (s *MigrationSourceSyncer) validating(ctx context.Context, source *migratio
 func (s *MigrationSourceSyncer) validateClusters(clusterNames []string) error {
 	ctx := context.Background()
 
-	// List all managed clusters once
-	clusterList := &clusterv1.ManagedClusterList{}
-	if err := s.client.List(ctx, clusterList); err != nil {
-		return err
-	}
-
-	// Create a map for efficient cluster lookup
-	clusterMap := make(map[string]*clusterv1.ManagedCluster)
-	for i := range clusterList.Items {
-		cluster := &clusterList.Items[i]
-		clusterMap[cluster.Name] = cluster
-	}
-
 	for _, clusterName := range clusterNames {
 		log.Infof("validating cluster: %s", clusterName)
 
-		cluster, exists := clusterMap[clusterName]
-		if !exists {
-			errMsg := fmt.Sprintf("cluster %s: not found", clusterName)
+		// Get cluster individually
+		cluster := &clusterv1.ManagedCluster{}
+		if err := s.client.Get(ctx, types.NamespacedName{Name: clusterName}, cluster); err != nil {
+			errMsg := fmt.Sprintf("the managedcluster %s is not found in managedhub cluster %v", clusterName, s.hubName)
 			log.Errorf(errMsg)
 			s.errList = append(s.errList, errMsg)
 			continue
@@ -736,7 +726,7 @@ func (s *MigrationSourceSyncer) validateClusters(clusterNames []string) error {
 
 		// Check if cluster is available
 		if !s.isClusterAvailable(cluster) {
-			errMsg := fmt.Sprintf("cluster %s: not available", clusterName)
+			errMsg := fmt.Sprintf("the managedcluster %s is not available in managedhub cluster %v", clusterName, s.hubName)
 			log.Warnf(errMsg)
 			s.errList = append(s.errList, errMsg)
 			continue
@@ -744,14 +734,14 @@ func (s *MigrationSourceSyncer) validateClusters(clusterNames []string) error {
 
 		// Check if cluster is hosted
 		if s.isClusterHosted(cluster) {
-			errMsg := fmt.Sprintf("cluster %s: is hosted", clusterName)
+			errMsg := fmt.Sprintf("the managedcluster %s is not hosted in managedhub cluster %v", clusterName, s.hubName)
 			log.Warnf(errMsg)
 			s.errList = append(s.errList, errMsg)
 			continue
 		}
 
 		if s.isLocalCluster(cluster) {
-			errMsg := fmt.Sprintf("cluster %s: is local cluster", clusterName)
+			errMsg := fmt.Sprintf("the managedcluster %s is local-cluster in managedhub cluster %v", clusterName, s.hubName)
 			log.Warnf(errMsg)
 			s.errList = append(s.errList, errMsg)
 			continue
@@ -759,7 +749,7 @@ func (s *MigrationSourceSyncer) validateClusters(clusterNames []string) error {
 
 		// Check if cluster is a managed hub
 		if s.isManagedHub(cluster) {
-			errMsg := fmt.Sprintf("cluster %s: is a hub cluster", clusterName)
+			errMsg := fmt.Sprintf("the managedcluster %s is a managedhub cluster", clusterName)
 			log.Warnf(errMsg)
 			s.errList = append(s.errList, errMsg)
 			continue

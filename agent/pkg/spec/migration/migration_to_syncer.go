@@ -52,6 +52,7 @@ type MigrationTargetSyncer struct {
 	transportConfig    *transport.TransportInternalConfig
 	bundleVersion      *eventversion.Version
 	currentMigrationId string
+	errList            []string
 }
 
 func NewMigrationTargetSyncer(client client.Client,
@@ -87,6 +88,7 @@ func (s *MigrationTargetSyncer) Sync(ctx context.Context, evt *cloudevents.Event
 				MigrationId: s.currentMigrationId,
 				Stage:       stage,
 				ErrMessage:  errMessage,
+				ErrList:     s.errList,
 			}, s.bundleVersion)
 		if err != nil {
 			log.Errorf("failed to report migration status: %v", err)
@@ -117,7 +119,7 @@ func (s *MigrationTargetSyncer) Sync(ctx context.Context, evt *cloudevents.Event
 	stage = event.Stage
 
 	// Set current migration ID and reset bundle version for initializing stage
-	if event.Stage == migrationv1alpha1.PhaseInitializing {
+	if event.Stage == migrationv1alpha1.PhaseValidating {
 		s.currentMigrationId = event.MigrationId
 		s.bundleVersion.Reset()
 	}
@@ -142,6 +144,8 @@ func (s *MigrationTargetSyncer) SetMigrationID(id string) {
 // handleStage processes different migration stages using switch statement
 func (s *MigrationTargetSyncer) handleStage(ctx context.Context, target *migration.MigrationTargetBundle) error {
 	switch target.Stage {
+	case migrationv1alpha1.PhaseValidating:
+		return s.executeStage(ctx, target, s.validating)
 	case migrationv1alpha1.PhaseInitializing:
 		return s.executeStage(ctx, target, s.initializing)
 	case migrationv1alpha1.PhaseRegistering:
@@ -169,6 +173,47 @@ func (s *MigrationTargetSyncer) executeStage(ctx context.Context, event *migrati
 	}
 
 	log.Infof("migration %s completed: migrationId=%s", event.Stage, event.MigrationId)
+	return nil
+}
+
+// validating handles the validating phase - check clusters exist in target hub
+func (s *MigrationTargetSyncer) validating(ctx context.Context, event *migration.MigrationTargetBundle) error {
+	// Reset error list for this validation
+	s.errList = []string{}
+
+	// Get cluster list from event
+	clusterList := event.ManagedClusters
+	if len(clusterList) == 0 {
+		log.Info("no managed clusters to validate")
+		return nil
+	}
+
+	log.Infof("validating %d clusters for migration: %v", len(clusterList), event.MigrationId)
+
+	// Check each cluster individually
+	for _, clusterName := range clusterList {
+		log.Infof("validating cluster: %s", clusterName)
+
+		// Check if cluster exists in target hub
+		cluster := &clusterv1.ManagedCluster{}
+		if err := s.client.Get(ctx, types.NamespacedName{Name: clusterName}, cluster); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			// Other errors should be reported
+			errMsg := fmt.Sprintf("cluster %s: failed to check existence: %v", clusterName, err)
+			log.Errorf(errMsg)
+			s.errList = append(s.errList, errMsg)
+			continue
+		}
+
+		// If cluster exists, report error
+		errMsg := fmt.Sprintf("cluster %s: already exists in target hub", clusterName)
+		log.Warnf(errMsg)
+		s.errList = append(s.errList, errMsg)
+	}
+
+	log.Infof("validation completed. errors found: %d", len(s.errList))
 	return nil
 }
 

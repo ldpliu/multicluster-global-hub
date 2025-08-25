@@ -47,7 +47,7 @@ func AddToManager(context context.Context, mgr ctrl.Manager, transportClient tra
 	}
 
 	dispatcher.RegisterSyncer(constants.MigrationSourceMsgKey,
-		migration.NewMigrationSourceSyncer(mgr.GetClient(), mgr.GetConfig(), transportClient, agentConfig.TransportConfig))
+		migration.NewMigrationSourceSyncer(mgr.GetClient(), mgr.GetConfig(), agentConfig.LeafHubName, transportClient, agentConfig.TransportConfig))
 	dispatcher.RegisterSyncer(constants.MigrationTargetMsgKey,
 		migration.NewMigrationTargetSyncer(mgr.GetClient(), transportClient, agentConfig.TransportConfig))
 	if err := migration.ResyncMigrationEvent(context, transportClient, agentConfig.TransportConfig); err != nil {
