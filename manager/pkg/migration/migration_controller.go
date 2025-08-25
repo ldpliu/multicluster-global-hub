@@ -42,6 +42,7 @@ const (
 type migrationClusterList struct {
 	migrationUID string
 	clusterList  []string
+	errList      []string
 }
 
 var (

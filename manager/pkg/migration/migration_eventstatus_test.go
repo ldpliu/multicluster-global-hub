@@ -239,7 +239,7 @@ func TestGetClusterList(t *testing.T) {
 			if tt.shouldSetup {
 				AddMigrationStatus(tt.migrationID)
 				if tt.setupClusters != nil {
-					SetClusterList(tt.migrationID, tt.setupClusters)
+					SetClusterList(tt.migrationID, tt.setupClusters, []string{})
 				}
 			}
 
@@ -250,7 +250,8 @@ func TestGetClusterList(t *testing.T) {
 			if tt.expectedResult == nil {
 				assert.Nil(t, result, "Expected nil result for migration %s, hub %s, phase %s", tt.migrationID, tt.hub, tt.phase)
 			} else {
-				assert.Equal(t, tt.expectedResult, result, "Cluster list mismatch for migration %s, hub %s, phase %s", tt.migrationID, tt.hub, tt.phase)
+				assert.NotNil(t, result, "Expected non-nil result for migration %s", tt.migrationID)
+				assert.Equal(t, tt.expectedResult, result.clusterList, "Cluster list mismatch for migration %s, hub %s, phase %s", tt.migrationID, tt.hub, tt.phase)
 			}
 
 			// Cleanup if migration was created

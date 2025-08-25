@@ -44,6 +44,7 @@ type MigrationStatusBundle struct {
 	ErrMessage      string   `json:"errMessage,omitempty"`
 	Resync          bool     `json:"resync,omitempty"`
 	ManagedClusters []string `json:"managedClusters,omitempty"`
+	ErrList         []string `json:"errList,omitempty"`
 }
 
 type MigrationResourceBundle struct {

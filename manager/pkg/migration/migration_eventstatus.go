@@ -105,11 +105,12 @@ func SetFinished(migrationId, hub, phase string) {
 }
 
 // SetClusterList sets the managed clusters list for the given migration stage
-func SetClusterList(migrationId string, managedClusters []string) {
+func SetClusterList(migrationId string, managedClusters, errList []string) {
 	mu.Lock()
 	defer mu.Unlock()
 	currentMigrationClusterList.migrationUID = migrationId
 	currentMigrationClusterList.clusterList = managedClusters
+	currentMigrationClusterList.errList = errList
 }
 
 func SetErrorMessage(migrationId, hub, phase, errMessage string) {
@@ -149,12 +150,12 @@ func GetErrorMessage(migrationId, hub, phase string) string {
 	return ""
 }
 
-// GetClusterList returns the managed clusters list for the given migration stage
-func GetClusterList(migrationId string) []string {
+// GetClusterList returns the managed clusters list
+func GetClusterList(migrationId string) *migrationClusterList {
 	mu.RLock()
 	defer mu.RUnlock()
 	if currentMigrationClusterList.migrationUID == migrationId {
-		return currentMigrationClusterList.clusterList
+		return &currentMigrationClusterList
 	}
 	return nil
 }

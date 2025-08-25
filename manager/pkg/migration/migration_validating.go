@@ -2,7 +2,6 @@ package migration
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -17,7 +16,6 @@ import (
 
 	migrationv1alpha1 "github.com/stolostron/multicluster-global-hub/operator/api/migration/v1alpha1"
 	"github.com/stolostron/multicluster-global-hub/pkg/constants"
-	"github.com/stolostron/multicluster-global-hub/pkg/database"
 	"github.com/stolostron/multicluster-global-hub/pkg/utils"
 )
 
@@ -41,9 +39,9 @@ var AllowedKinds = map[string]bool{
 }
 
 type ManagedClusterInfo struct {
-	leafHubName string
-	annotations map[string]string
-	labels      map[string]string
+	LeafHubName string
+	Annotations map[string]string
+	Labels      map[string]string
 }
 
 // DNS Subdomain (RFC 1123) — for ConfigMap, Secret, Namespace, etc.
@@ -134,6 +132,10 @@ func (m *ClusterMigrationController) validating(ctx context.Context,
 	}
 
 	log.Info("migration validating clusters")
+	if len(mcm.Spec.IncludedManagedClusters) == 0 && mcm.Spec.IncludedManagedClustersPlacementRef == "" {
+		err = fmt.Errorf("includedmanagedclusters is empty")
+		return needsRequeue, err
+	}
 
 	// Get migrate clusters
 	clusters, err := m.getMigrationClusters(ctx, mcm)
@@ -155,10 +157,6 @@ func (m *ClusterMigrationController) validating(ctx context.Context,
 		clusterList:  clusters,
 	}
 
-	// verify managedclusters
-	if err = m.validateClustersForMigration(mcm, &condition); err != nil {
-		return needsRequeue, err
-	}
 	return needsRequeue, nil
 }
 
@@ -167,31 +165,25 @@ func (m *ClusterMigrationController) getMigrationClusters(
 ) ([]string, error) {
 	migrationUID := string(mcm.UID)
 
+	// If the clusterlist set, do not validate any more
 	if m.currentClusterList.migrationUID == migrationUID {
 		return m.currentClusterList.clusterList, nil
-	}
-
-	// Fallback to spec if available
-	if len(mcm.Spec.IncludedManagedClusters) != 0 {
-		return mcm.Spec.IncludedManagedClusters, nil
-	}
-
-	if mcm.Spec.IncludedManagedClustersPlacementRef == "" {
-		return nil, fmt.Errorf("no clusters in migration cr")
 	}
 
 	// TODO: will load the cluster from configmap first
 
 	// send event to source hub and get placement name from bundle
 	if !GetStarted(string(mcm.GetUID()), mcm.Spec.From, migrationv1alpha1.PhaseValidating) {
+		var clusterList []string
+		if len(mcm.Spec.IncludedManagedClusters) != 0 {
+			clusterList = mcm.Spec.IncludedManagedClusters
+		}
 		err := m.sendEventToSourceHub(ctx, mcm.Spec.From, mcm, migrationv1alpha1.PhaseValidating,
-			nil, nil, "")
+			clusterList, nil, "")
 		if err != nil {
 			return nil, err
 		}
-		log.Infof("sent validating events to source hubs: %s with placement: %s",
-			mcm.Spec.From, mcm.Spec.IncludedManagedClustersPlacementRef)
-		log.Infof("sent initialing events to source hubs: %s", mcm.Spec.From)
+		log.Infof("sent validating events to source hubs: %s", mcm.Spec.From)
 		SetStarted(string(mcm.GetUID()), mcm.Spec.From, migrationv1alpha1.PhaseValidating)
 	}
 
@@ -200,14 +192,22 @@ func (m *ClusterMigrationController) getMigrationClusters(
 	}
 
 	// try to get clusters from MigrationStatusBundle
-	clusters := GetClusterList(string(mcm.GetUID()))
-	if len(clusters) > 0 {
-		log.Debugf("clusters: %v", clusters)
-		return clusters, nil
+	migrationClusters := GetClusterList(string(mcm.GetUID()))
+	if migrationClusters == nil {
+		return nil, nil
 	}
 
-	// need reconcile to wait clusterlist
-	return nil, nil
+	if len(migrationClusters.errList) != 0 {
+		for _, ev := range migrationClusters.errList {
+			m.EventRecorder.Eventf(mcm, corev1.EventTypeWarning, "ValidationFailed", ev)
+		}
+		log.Warnf("migration has error list: %v", migrationClusters.errList)
+		return nil, fmt.Errorf("%v clusters validate failed, please check the events for details", len(migrationClusters.errList))
+	}
+	if len(migrationClusters.clusterList) == 0 {
+		return nil, nil
+	}
+	return migrationClusters.clusterList, nil
 }
 
 // IsValidResource checks format kind/namespace/name
@@ -235,158 +235,6 @@ func IsValidResource(resource string) error {
 type ValidationResult struct {
 	ErrorMessage    string
 	ConditionReason string
-}
-
-// validateSingleCluster validates a single cluster,
-// returns validation result with error message and condition reason
-func validateSingleCluster(
-	cluster string,
-	clusterToClusterInfoMap map[string]ManagedClusterInfo,
-	mcm *migrationv1alpha1.ManagedClusterMigration,
-) ValidationResult {
-	clusterInfo, ok := clusterToClusterInfoMap[cluster]
-	if !ok {
-		return ValidationResult{
-			ErrorMessage:    fmt.Sprintf("cluster %s not found in database", cluster),
-			ConditionReason: ConditionReasonClusterNotFound,
-		}
-	}
-
-	// check not hosted using annotations
-	if isHostedCluster(clusterInfo) {
-		return ValidationResult{
-			ErrorMessage:    fmt.Sprintf("cluster %s is hosted", cluster),
-			ConditionReason: ConditionReasonResourceInvalid,
-		}
-	}
-
-	// check not local cluster
-	if clusterInfo.labels != nil && clusterInfo.labels[constants.LocalClusterName] == "true" {
-		return ValidationResult{
-			ErrorMessage:    fmt.Sprintf("cluster %s is local cluster", cluster),
-			ConditionReason: ConditionReasonResourceInvalid,
-		}
-	}
-	// if cluster in destination hub
-	if clusterInfo.leafHubName == mcm.Spec.To {
-		return ValidationResult{
-			ErrorMessage:    fmt.Sprintf("cluster %s is already on hub %s", cluster, mcm.Spec.To),
-			ConditionReason: ConditionReasonClusterConflict,
-		}
-	}
-
-	// if cluster not in source hub
-	if clusterInfo.leafHubName != mcm.Spec.From {
-		return ValidationResult{
-			ErrorMessage:    fmt.Sprintf("cluster %s not found in hub %s", cluster, mcm.Spec.From),
-			ConditionReason: ConditionReasonClusterNotFound,
-		}
-	}
-
-	return ValidationResult{}
-}
-
-// isHostedCluster checks if a managed cluster is hosted
-func isHostedCluster(clusterInfo ManagedClusterInfo) bool {
-	return clusterInfo.annotations != nil &&
-		clusterInfo.annotations[constants.AnnotationClusterDeployMode] == constants.ClusterDeployModeHosted
-}
-
-// validateClustersForMigration validates each cluster for migration for each failed cluster.
-// Returns a single error if any cluster fails validation.
-func (m *ClusterMigrationController) validateClustersForMigration(
-	mcm *migrationv1alpha1.ManagedClusterMigration,
-	condition *metav1.Condition,
-) error {
-	// get the clusters in database
-	clusterToClusterInfoMap, err := m.getclusterToClusterInfoMap(mcm)
-	if err != nil {
-		condition.Reason = ConditionReasonClusterNotFound
-		return fmt.Errorf("failed to get cluster information: %w", err)
-	}
-
-	if len(clusterToClusterInfoMap) == 0 {
-		condition.Reason = ConditionReasonClusterNotFound
-		return fmt.Errorf("no valid managed clusters found in database")
-	}
-
-	failedClustersCount := 0
-
-	// verify clusters in mcm
-	for _, cluster := range m.currentClusterList.clusterList {
-		log.Infof("verify cluster: %v", cluster)
-		if singleResult := validateSingleCluster(cluster, clusterToClusterInfoMap, mcm); singleResult.ErrorMessage != "" {
-			failedClustersCount += 1
-			// Record validation error as Kubernetes event
-			m.EventRecorder.Eventf(mcm, corev1.EventTypeWarning, "ValidationFailed", singleResult.ErrorMessage)
-			log.Warnf(singleResult.ErrorMessage)
-			// Set condition reason based on validation result - use the last error type encountered
-			condition.Reason = singleResult.ConditionReason
-		}
-	}
-	log.Infof("%v clusters verify failed", failedClustersCount)
-
-	if failedClustersCount > 0 {
-		return fmt.Errorf("%v clusters validate failed, please check the events for details", failedClustersCount)
-	}
-
-	return nil
-}
-
-// managedClusterRecord represents a row from the managed_clusters table
-// used for efficient database queries via GORM
-type managedClusterRecord struct {
-	ClusterName string `gorm:"column:cluster_name"`  // The name of the managed cluster
-	LeafHubName string `gorm:"column:leaf_hub_name"` // The hub cluster that manages this cluster
-	Annotations string `gorm:"column:annotations"`   // JSON annotations from payload->metadata->annotations
-	Labels      string `gorm:"column:labels"`        // JSON labels from payload->metadata->labels
-}
-
-func (managedClusterRecord) TableName() string {
-	return "status.managed_clusters"
-}
-
-func (m *ClusterMigrationController) getclusterToClusterInfoMap(
-	mcm *migrationv1alpha1.ManagedClusterMigration,
-) (map[string]ManagedClusterInfo, error) {
-	db := database.GetGorm()
-	if db == nil {
-		return nil, fmt.Errorf("database connection is not initialized")
-	}
-
-	var records []managedClusterRecord
-	err := db.Select(
-		"cluster_name", "leaf_hub_name",
-		"payload->'metadata'->'annotations' as annotations", "payload->'metadata'->'labels' as labels").
-		Where("cluster_name IN (?) AND deleted_at IS NULL", m.currentClusterList.clusterList).
-		Find(&records).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to query managed clusters: %w", err)
-	}
-
-	managedClusterMap := make(map[string]ManagedClusterInfo, len(records))
-	for _, record := range records {
-		var annotations map[string]string
-		if record.Annotations != "" {
-			if err := json.Unmarshal([]byte(record.Annotations), &annotations); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal annotations json: %w", err)
-			}
-		}
-
-		var labels map[string]string
-		if record.Labels != "" {
-			if err := json.Unmarshal([]byte(record.Labels), &labels); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal labels json: %w", err)
-			}
-		}
-
-		managedClusterMap[record.ClusterName] = ManagedClusterInfo{
-			leafHubName: record.LeafHubName,
-			annotations: annotations,
-			labels:      labels,
-		}
-	}
-	return managedClusterMap, nil
 }
 
 // validateHubCluster validates if ManagedCluster is a hub cluster and is ready, returns error if not valid

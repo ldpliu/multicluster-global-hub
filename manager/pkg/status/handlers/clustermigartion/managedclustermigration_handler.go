@@ -81,7 +81,7 @@ func (k *managedClusterMigrationHandler) handle(ctx context.Context, evt *cloude
 
 	// Store managed clusters if provided
 	if len(bundle.ManagedClusters) > 0 {
-		migration.SetClusterList(bundle.MigrationId, bundle.ManagedClusters)
+		migration.SetClusterList(bundle.MigrationId, bundle.ManagedClusters, bundle.ErrList)
 	}
 
 	if bundle.ErrMessage != "" {
