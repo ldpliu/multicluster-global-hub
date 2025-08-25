@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
@@ -52,15 +51,19 @@ type MigrationTargetSyncer struct {
 	transportConfig    *transport.TransportInternalConfig
 	bundleVersion      *eventversion.Version
 	currentMigrationId string
+	hubName            string
+	errList            []string
 }
 
 func NewMigrationTargetSyncer(client client.Client,
 	transportClient transport.TransportClient, transportConfig *transport.TransportInternalConfig,
+	hubName string,
 ) *MigrationTargetSyncer {
 	return &MigrationTargetSyncer{
 		client:          client,
 		transportClient: transportClient,
 		transportConfig: transportConfig,
+		hubName:         hubName,
 		bundleVersion:   eventversion.NewVersion(),
 	}
 }
@@ -87,6 +90,7 @@ func (s *MigrationTargetSyncer) Sync(ctx context.Context, evt *cloudevents.Event
 				MigrationId: s.currentMigrationId,
 				Stage:       stage,
 				ErrMessage:  errMessage,
+				ErrList:     s.errList,
 			}, s.bundleVersion)
 		if err != nil {
 			log.Errorf("failed to report migration status: %v", err)
@@ -117,8 +121,10 @@ func (s *MigrationTargetSyncer) Sync(ctx context.Context, evt *cloudevents.Event
 	stage = event.Stage
 
 	// Set current migration ID and reset bundle version for initializing stage
-	if event.Stage == migrationv1alpha1.PhaseInitializing {
+	if event.Stage == migrationv1alpha1.PhaseValidating {
 		s.currentMigrationId = event.MigrationId
+		// Reset error list for this validation
+		s.errList = nil
 		s.bundleVersion.Reset()
 	}
 
@@ -139,9 +145,16 @@ func (s *MigrationTargetSyncer) SetMigrationID(id string) {
 	s.currentMigrationId = id
 }
 
+func (s *MigrationTargetSyncer) handleErr(errMsg string) {
+	log.Errorf(errMsg)
+	s.errList = append(s.errList, errMsg)
+}
+
 // handleStage processes different migration stages using switch statement
 func (s *MigrationTargetSyncer) handleStage(ctx context.Context, target *migration.MigrationTargetBundle) error {
 	switch target.Stage {
+	case migrationv1alpha1.PhaseValidating:
+		return s.executeStage(ctx, target, s.validating)
 	case migrationv1alpha1.PhaseInitializing:
 		return s.executeStage(ctx, target, s.initializing)
 	case migrationv1alpha1.PhaseRegistering:
@@ -169,6 +182,45 @@ func (s *MigrationTargetSyncer) executeStage(ctx context.Context, event *migrati
 	}
 
 	log.Infof("migration %s completed: migrationId=%s", event.Stage, event.MigrationId)
+	return nil
+}
+
+// validating handles the validating phase - check clusters exist in target hub
+func (s *MigrationTargetSyncer) validating(ctx context.Context, event *migration.MigrationTargetBundle) error {
+
+	// Get cluster list from event
+	clusterList := event.ManagedClusters
+	if len(clusterList) == 0 {
+		log.Info("no managed clusters to validate")
+		return nil
+	}
+
+	log.Infof("validating %d clusters for migration: %v", len(clusterList), event.MigrationId)
+
+	// Check each cluster individually
+	for _, clusterName := range clusterList {
+		log.Infof("validating cluster: %s", clusterName)
+
+		// Check if cluster exists in target hub
+		cluster := &clusterv1.ManagedCluster{}
+		if err := s.client.Get(ctx, types.NamespacedName{Name: clusterName}, cluster); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			// Other errors should be reported
+			errMsg := fmt.Sprintf("cluster %s: failed to check existence: %v", clusterName, err)
+			s.handleErr(errMsg)
+			continue
+		}
+
+		// If cluster exists, report error
+		errMsg := fmt.Sprintf("cluster %s: already exists in target hub", clusterName)
+		s.handleErr(errMsg)
+	}
+	if s.errList != nil {
+		return fmt.Errorf("%v clusters validate failed in target hub: %v, please check the events for details", len(s.errList), s.hubName)
+	}
+	log.Infof("validation completed. errors found: %d", len(s.errList))
 	return nil
 }
 
@@ -206,27 +258,27 @@ func (s *MigrationTargetSyncer) registering(ctx context.Context,
 		timeout = time.Duration(event.RegisteringTimeoutMinutes) * time.Minute
 	}
 
-	errMessage := ""
-	err := wait.PollUntilContextTimeout(ctx, 5*time.Second, timeout, true,
+	_ = wait.PollUntilContextTimeout(ctx, 5*time.Second, timeout, true,
 		func(context.Context) (done bool, err error) {
-			notReadyClusters := []string{}
+			// Reset error list for each polling iteration
+			s.errList = []string{}
 			for _, clusterName := range event.ManagedClusters {
 				if err := s.checkClusterManifestWork(ctx, clusterName); err != nil {
 					log.Debugf("cluster %s not ready: %v", clusterName, err)
-					notReadyClusters = append(notReadyClusters, fmt.Sprintf("cluster(%s): %s", clusterName, err.Error()))
+					errMsg := fmt.Sprintf("cluster %s: %v", clusterName, err)
+					s.errList = append(s.errList, errMsg)
 				}
 			}
 
-			if len(notReadyClusters) > 0 {
-				errMessage = strings.Join(notReadyClusters, ";")
+			if len(s.errList) > 0 {
 				return false, nil
 			}
-			errMessage = ""
 			return true, nil
 		},
 	)
-	if err != nil {
-		return fmt.Errorf("failed to wait for all managed clusters to be ready: %w - %s", err, errMessage)
+
+	if len(s.errList) > 0 {
+		return fmt.Errorf("failed to wait for %v managedclusters to be ready in target hub %s, please check the events for details", len(s.errList), s.hubName)
 	}
 	log.Infof("all %d managed clusters are ready for migration", len(event.ManagedClusters))
 	return nil
@@ -298,18 +350,26 @@ func (s *MigrationTargetSyncer) syncMigrationResources(ctx context.Context,
 
 	for _, mc := range migrationResources.ManagedClusters {
 		if err := s.ensureNamespace(ctx, mc.Name); err != nil {
-			return err
+			errMsg := fmt.Sprintf("failed to update namespace for managed cluster %s: %v", mc.Name, err)
+			s.handleErr(errMsg)
+			continue
 		}
 		if _, err := controllerutil.CreateOrUpdate(ctx, s.client, &mc, func() error { return nil }); err != nil {
-			log.Errorf("failed to create or update the managed cluster %s: %v", mc.Name, err)
-			return err
+			errMsg := fmt.Sprintf("failed to create or update the managed cluster %s: %v", mc.Name, err)
+			s.handleErr(errMsg)
+			continue
 		}
 	}
 	for _, config := range migrationResources.KlusterletAddonConfig {
 		if _, err := controllerutil.CreateOrUpdate(ctx, s.client, &config, func() error { return nil }); err != nil {
-			log.Errorf("failed to create or update the klusterlet addon config %s: %v", config.Name, err)
-			return err
+			errMsg := fmt.Sprintf("failed to create or update the klusterlet addon config %s: %v", config.Name, err)
+			s.handleErr(errMsg)
+			continue
 		}
+	}
+
+	if len(s.errList) > 0 {
+		return fmt.Errorf("%d resources deploy failed in target hub: %v, please check the events for details", len(s.errList), s.hubName)
 	}
 
 	log.Info("finished syncing migration resources")
@@ -683,17 +743,24 @@ func (s *MigrationTargetSyncer) rollbackDeploying(ctx context.Context, spec *mig
 	// 1. Remove ManagedClusters from target hub
 	for _, clusterName := range spec.ManagedClusters {
 		if err := s.removeManagedCluster(ctx, clusterName); err != nil {
-			log.Errorf("failed to remove managed cluster %s: %v", clusterName, err)
-			return fmt.Errorf("failed to remove managed cluster %s: %v", clusterName, err)
+			errMsg := fmt.Sprintf("failed to remove managed cluster %s: %v", clusterName, err)
+			s.handleErr(errMsg)
+			continue
 		}
 	}
 
 	// 2. Remove KlusterletAddonConfigs from target hub
 	for _, clusterName := range spec.ManagedClusters {
 		if err := s.removeKlusterletAddonConfig(ctx, clusterName); err != nil {
-			log.Errorf("failed to remove klusterlet addon config %s: %v", clusterName, err)
-			return fmt.Errorf("failed to remove klusterlet addon config %s: %v", clusterName, err)
+			errMsg := fmt.Sprintf("failed to remove klusterlet addon config %s: %v", clusterName, err)
+			s.handleErr(errMsg)
+			continue
 		}
+	}
+
+	// Check if there were any errors during cluster/addon cleanup
+	if len(s.errList) > 0 {
+		return fmt.Errorf("%d resources remove failed during rollback deploying in target hub: %v, please check the events for details", len(s.errList), s.hubName)
 	}
 
 	// roll back initializing

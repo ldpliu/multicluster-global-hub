@@ -9,6 +9,7 @@ var (
 	migrationStatuses           = make(map[string]*MigrationStatus)
 	mu                          sync.RWMutex // optional: for concurrent access
 	currentMigrationClusterList migrationClusterList
+	currentMigrationErrList     map[string][]string
 )
 
 type MigrationStatus struct {
@@ -104,15 +105,6 @@ func SetFinished(migrationId, hub, phase string) {
 	}
 }
 
-// SetClusterList sets the managed clusters list for the given migration stage
-func SetClusterList(migrationId string, managedClusters, errList []string) {
-	mu.Lock()
-	defer mu.Unlock()
-	currentMigrationClusterList.migrationUID = migrationId
-	currentMigrationClusterList.clusterList = managedClusters
-	currentMigrationClusterList.errList = errList
-}
-
 func SetErrorMessage(migrationId, hub, phase, errMessage string) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -150,12 +142,40 @@ func GetErrorMessage(migrationId, hub, phase string) string {
 	return ""
 }
 
+// SetClusterList sets the managed clusters list for the given migration stage
+func SetClusterList(migrationId string, managedClusters, errList []string) {
+	mu.Lock()
+	defer mu.Unlock()
+	currentMigrationClusterList.migrationUID = migrationId
+	currentMigrationClusterList.clusterList = managedClusters
+	currentMigrationClusterList.errList = errList
+}
+
 // GetClusterList returns the managed clusters list
 func GetClusterList(migrationId string) *migrationClusterList {
 	mu.RLock()
 	defer mu.RUnlock()
 	if currentMigrationClusterList.migrationUID == migrationId {
 		return &currentMigrationClusterList
+	}
+	return nil
+}
+
+func SetErrorList(migrationId string, errMsg []string) {
+	mu.Lock()
+	defer mu.Unlock()
+	currentMigrationErrList[migrationId] = errMsg
+}
+
+func GetErrorList(migrationId string) []string {
+	mu.RLock()
+	defer mu.RUnlock()
+	if currentMigrationErrList == nil {
+		return nil
+	}
+	errList, ok := currentMigrationErrList[migrationId]
+	if ok {
+		return errList
 	}
 	return nil
 }

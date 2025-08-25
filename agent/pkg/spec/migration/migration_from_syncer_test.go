@@ -475,7 +475,7 @@ func TestMigrationSourceHubSyncer(t *testing.T) {
 				},
 			}
 
-			managedClusterMigrationSyncer := NewMigrationSourceSyncer(fakeClient, nil, transportClient,
+			managedClusterMigrationSyncer := NewMigrationSourceSyncer(fakeClient, nil, "hub1", transportClient,
 				transportConfig)
 			managedClusterMigrationSyncer.currentMigrationId = currentSyncerMigrationId
 			payload, err := json.Marshal(c.receivedMigrationEventBundle)

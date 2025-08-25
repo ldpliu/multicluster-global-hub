@@ -55,16 +55,19 @@ type MigrationSourceSyncer struct {
 	transportConfig    *transport.TransportInternalConfig
 	bundleVersion      *eventversion.Version
 	currentMigrationId string
+	hubName            string
 	managedClusters    []string
 	errList            []string
 }
 
 func NewMigrationSourceSyncer(client client.Client, restConfig *rest.Config,
+	hubName string,
 	transportClient transport.TransportClient, transportConfig *transport.TransportInternalConfig,
 ) *MigrationSourceSyncer {
 	return &MigrationSourceSyncer{
 		client:          client,
 		restConfig:      restConfig,
+		hubName:         hubName,
 		transportClient: transportClient,
 		transportConfig: transportConfig,
 		bundleVersion:   eventversion.NewVersion(),
@@ -186,16 +189,23 @@ func (s *MigrationSourceSyncer) deploying(ctx context.Context, source *migration
 		// add cluster
 		cluster, err := s.prepareManagedClusterForMigration(ctx, managedCluster)
 		if err != nil {
-			return fmt.Errorf("failed to prepare managed cluster %s for migration: %w", managedCluster, err)
+			errMsg := fmt.Sprintf("failed to prepare managed cluster %s for migration: %w", managedCluster, err)
+			s.handleErr(errMsg)
+			continue
 		}
 		migrationResources.ManagedClusters = append(migrationResources.ManagedClusters, *cluster)
 
 		// add addonConfig
 		addonConfig, err := s.prepareAddonConfigForMigration(ctx, managedCluster)
 		if err != nil {
-			return fmt.Errorf("failed to prepare addon config %s for migration: %w", managedCluster, err)
+			errMsg := fmt.Sprintf("failed to prepare addon config %s for migration: %w", managedCluster, err)
+			s.handleErr(errMsg)
+			continue
 		}
 		migrationResources.KlusterletAddonConfig = append(migrationResources.KlusterletAddonConfig, *addonConfig)
+	}
+	if s.errList != nil {
+		return fmt.Errorf("%v clusters deploy failed in source hub: %v, please check the events for details", len(s.errList), s.hubName)
 	}
 	log.Info("deploying: attach clusters and addonConfigs into the event")
 
@@ -255,7 +265,9 @@ func (m *MigrationSourceSyncer) initializing(ctx context.Context, source *migrat
 		if err := m.client.Get(ctx, types.NamespacedName{
 			Name: managedCluster,
 		}, mc); err != nil {
-			return err
+			errMsg := fmt.Sprintf("failed to get managedcluster %s in managedhub %v", mc.Name, m.hubName)
+			m.handleErr(errMsg)
+			continue
 		}
 		annotations := mc.Annotations
 		if annotations == nil {
@@ -281,10 +293,20 @@ func (m *MigrationSourceSyncer) initializing(ctx context.Context, source *migrat
 			log.Infof("managed clusters %s is %s", mc.GetName(), operation)
 			return err
 		}); err != nil {
-			return err
+			errMsg := fmt.Sprintf("failed to set annotation to managedcluster %s in managedhub %v", mc.Name, m.hubName)
+			m.handleErr(errMsg)
+			continue
 		}
 	}
+	if m.errList != nil {
+		return fmt.Errorf("%v clusters initialize failed in source hub: %v, please check the events for details", len(m.errList), m.hubName)
+	}
 	return nil
+}
+
+func (m *MigrationSourceSyncer) handleErr(errMsg string) {
+	log.Errorf(errMsg)
+	m.errList = append(m.errList, errMsg)
 }
 
 // generateKlusterletConfig generate the klusterletconfig for migration
@@ -363,8 +385,13 @@ func (m *MigrationSourceSyncer) registering(
 			return m.client.Update(ctx, mc)
 		})
 		if err != nil {
-			return fmt.Errorf("failed to set HubAcceptsClient to false for managed cluster %s: %w", managedCluster, err)
+			errMsg := fmt.Sprintf("failed to set HubAcceptsClient to false for managed cluster %s: %v", managedCluster, err)
+			m.handleErr(errMsg)
+			continue
 		}
+	}
+	if m.errList != nil {
+		return fmt.Errorf("%v clusters registering failed in source hub: %v, please check the events for details", len(m.errList), m.hubName)
 	}
 	return nil
 }
@@ -597,8 +624,13 @@ func (s *MigrationSourceSyncer) rollbackRegistering(ctx context.Context, spec *m
 			return s.client.Update(ctx, mc)
 		})
 		if err != nil {
-			return fmt.Errorf("failed to set HubAcceptsClient to true for managed cluster %s: %w", managedCluster, err)
+			errMsg := fmt.Sprintf("failed to set HubAcceptsClient to true for managedcluster %s in managedhub %v", managedCluster, s.hubName)
+			s.handleErr(errMsg)
+			continue
 		}
+	}
+	if s.errList != nil {
+		return fmt.Errorf("%v clusters rollback registering failed in source hub: %v, please check the events for details", len(s.errList), s.hubName)
 	}
 
 	return nil
@@ -635,17 +667,18 @@ func (s *MigrationSourceSyncer) reportStatus(ctx context.Context, spec *migratio
 
 // deleteClusterIfExists handles cleaning up multiple clusters
 func (s *MigrationSourceSyncer) deleteClusterIfExists(ctx context.Context, clusterNames []string) error {
-	var errors []string
 
 	for _, clusterName := range clusterNames {
 		log.Debugf("cleaning up managed cluster %s", clusterName)
 		if err := s.cleanupSingleCluster(ctx, clusterName); err != nil {
-			errors = append(errors, fmt.Sprintf("cluster %s: %v", clusterName, err))
+			errMsg := fmt.Sprintf("cluster %s: %v", clusterName, err)
+			s.handleErr(errMsg)
+			continue
 		}
 	}
 
-	if len(errors) > 0 {
-		return fmt.Errorf("failed to clean up some clusters: %s", strings.Join(errors, "; "))
+	if len(s.errList) > 0 {
+		return fmt.Errorf("%d clusters clean up failed in source hub: %s, please check the events for details", s.hubName)
 	}
 
 	return nil
@@ -693,7 +726,6 @@ func (s *MigrationSourceSyncer) validating(ctx context.Context, source *migratio
 			return fmt.Errorf("failed to get clusters from placement decisions: %w", err)
 		}
 		s.managedClusters = clusters
-		return nil
 	} else {
 		s.managedClusters = source.ManagedClusters
 	}
@@ -710,60 +742,46 @@ func (s *MigrationSourceSyncer) validating(ctx context.Context, source *migratio
 func (s *MigrationSourceSyncer) validateClusters(clusterNames []string) error {
 	ctx := context.Background()
 
-	// List all managed clusters once
-	clusterList := &clusterv1.ManagedClusterList{}
-	if err := s.client.List(ctx, clusterList); err != nil {
-		return err
-	}
-
-	// Create a map for efficient cluster lookup
-	clusterMap := make(map[string]*clusterv1.ManagedCluster)
-	for i := range clusterList.Items {
-		cluster := &clusterList.Items[i]
-		clusterMap[cluster.Name] = cluster
-	}
-
 	for _, clusterName := range clusterNames {
 		log.Infof("validating cluster: %s", clusterName)
 
-		cluster, exists := clusterMap[clusterName]
-		if !exists {
-			errMsg := fmt.Sprintf("cluster %s: not found", clusterName)
-			log.Errorf(errMsg)
-			s.errList = append(s.errList, errMsg)
+		// Get cluster individually
+		cluster := &clusterv1.ManagedCluster{}
+		if err := s.client.Get(ctx, types.NamespacedName{Name: clusterName}, cluster); err != nil {
+			errMsg := fmt.Sprintf("the managedcluster %s is not found in managedhub cluster %v", clusterName, s.hubName)
+			s.handleErr(errMsg)
 			continue
 		}
 
 		// Check if cluster is available
 		if !s.isClusterAvailable(cluster) {
-			errMsg := fmt.Sprintf("cluster %s: not available", clusterName)
-			log.Warnf(errMsg)
-			s.errList = append(s.errList, errMsg)
+			errMsg := fmt.Sprintf("the managedcluster %s is not available in managedhub cluster %v", clusterName, s.hubName)
+			s.handleErr(errMsg)
 			continue
 		}
 
 		// Check if cluster is hosted
 		if s.isClusterHosted(cluster) {
-			errMsg := fmt.Sprintf("cluster %s: is hosted", clusterName)
-			log.Warnf(errMsg)
-			s.errList = append(s.errList, errMsg)
+			errMsg := fmt.Sprintf("the managedcluster %s is not hosted in managedhub cluster %v", clusterName, s.hubName)
+			s.handleErr(errMsg)
 			continue
 		}
 
 		if s.isLocalCluster(cluster) {
-			errMsg := fmt.Sprintf("cluster %s: is local cluster", clusterName)
-			log.Warnf(errMsg)
-			s.errList = append(s.errList, errMsg)
+			errMsg := fmt.Sprintf("the managedcluster %s is local-cluster in managedhub cluster %v", clusterName, s.hubName)
+			s.handleErr(errMsg)
 			continue
 		}
 
 		// Check if cluster is a managed hub
 		if s.isManagedHub(cluster) {
-			errMsg := fmt.Sprintf("cluster %s: is a hub cluster", clusterName)
-			log.Warnf(errMsg)
-			s.errList = append(s.errList, errMsg)
+			errMsg := fmt.Sprintf("the managedcluster %s is a managedhub cluster", clusterName)
+			s.handleErr(errMsg)
 			continue
 		}
+	}
+	if s.errList != nil {
+		return fmt.Errorf("%v clusters validate failed in source hub: %v, please check the events for details", len(s.errList), s.hubName)
 	}
 	log.Infof("validate cluster errList: %v", s.errList)
 	return nil
