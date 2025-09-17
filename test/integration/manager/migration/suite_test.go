@@ -334,7 +334,7 @@ func simulateHubConfirmation(uid types.UID, hubName, phase string) {
 	migration.SetFinished(string(uid), hubName, phase)
 }
 
-// cleanupMigrationCR removes a migration CR - deletion waiting should be handled by Eventually in test
+// cleanupMigrationCR removes a migration CR and verifies it no longer exists
 func cleanupMigrationCR(ctx context.Context, name, namespace string) error {
 	migration := &migrationv1alpha1.ManagedClusterMigration{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
@@ -344,5 +344,12 @@ func cleanupMigrationCR(ctx context.Context, name, namespace string) error {
 	if err := mgr.GetClient().Delete(ctx, migration); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete migration %s: %w", name, err)
 	}
+
+	// Verify migration is actually deleted
+	Eventually(func() bool {
+		err := mgr.GetClient().Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, migration)
+		return errors.IsNotFound(err)
+	}, "10s", "200ms").Should(BeTrue(), "migration should be deleted")
+
 	return nil
 }
