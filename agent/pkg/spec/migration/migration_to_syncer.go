@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
@@ -18,6 +19,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
@@ -394,6 +397,119 @@ func (s *MigrationTargetSyncer) syncMigrationResources(ctx context.Context,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create or update klusterlet addon config %s: %w", config.Name, err)
+		}
+	}
+
+	for _, clusterDeployment := range migrationResources.ClusterDeployments {
+		if err := s.ensureNamespace(ctx, clusterDeployment.GetNamespace()); err != nil {
+			return err
+		}
+		currentClusterDeployment := &unstructured.Unstructured{}
+		currentClusterDeployment.SetGroupVersionKind(schema.GroupVersionKind{
+			Group:   "hive.openshift.io",
+			Version: "v1",
+			Kind:    "ClusterDeployment",
+		})
+		currentClusterDeployment.SetName(clusterDeployment.GetName())
+		currentClusterDeployment.SetNamespace(clusterDeployment.GetNamespace())
+
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			operation, err := controllerutil.CreateOrUpdate(ctx, s.client, currentClusterDeployment,
+				func() error {
+					currentClusterDeployment.SetAnnotations(clusterDeployment.GetAnnotations())
+					currentClusterDeployment.SetLabels(clusterDeployment.GetLabels())
+					currentClusterDeployment.SetFinalizers(clusterDeployment.GetFinalizers())
+					// Copy spec from source
+					if spec, found, err := unstructured.NestedMap(clusterDeployment.Object, "spec"); err == nil && found {
+						err := unstructured.SetNestedMap(currentClusterDeployment.Object, spec, "spec")
+						if err != nil {
+							return err
+						}
+					}
+					// Copy status from source
+					if status, found, err := unstructured.NestedMap(clusterDeployment.Object, "status"); err == nil && found {
+						err := unstructured.SetNestedMap(currentClusterDeployment.Object, status, "status")
+						if err != nil {
+							return err
+						}
+					}
+					return nil
+				})
+			log.Infof("cluster deployment %s is %s", clusterDeployment.GetName(), operation)
+			return err
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create or update cluster deployment %s: %w", clusterDeployment.GetName(), err)
+		}
+	}
+
+	for _, agentClusterInstall := range migrationResources.AgentClusterInstalls {
+		if err := s.ensureNamespace(ctx, agentClusterInstall.GetNamespace()); err != nil {
+			return err
+		}
+		currentAgentClusterInstall := &unstructured.Unstructured{}
+		currentAgentClusterInstall.SetGroupVersionKind(schema.GroupVersionKind{
+			Group:   "extensions.hive.openshift.io",
+			Version: "v1beta1",
+			Kind:    "AgentClusterInstall",
+		})
+		currentAgentClusterInstall.SetName(agentClusterInstall.GetName())
+		currentAgentClusterInstall.SetNamespace(agentClusterInstall.GetNamespace())
+
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			operation, err := controllerutil.CreateOrUpdate(ctx, s.client, currentAgentClusterInstall,
+				func() error {
+					currentAgentClusterInstall.SetAnnotations(agentClusterInstall.GetAnnotations())
+					currentAgentClusterInstall.SetLabels(agentClusterInstall.GetLabels())
+					currentAgentClusterInstall.SetFinalizers(agentClusterInstall.GetFinalizers())
+					// Copy spec from source
+					if spec, found, err := unstructured.NestedMap(agentClusterInstall.Object, "spec"); err == nil && found {
+						err := unstructured.SetNestedMap(currentAgentClusterInstall.Object, spec, "spec")
+						if err != nil {
+							return err
+						}
+					}
+					// Copy status from source
+					if status, found, err := unstructured.NestedMap(agentClusterInstall.Object, "status"); err == nil && found {
+						err := unstructured.SetNestedMap(currentAgentClusterInstall.Object, status, "status")
+						if err != nil {
+							return err
+						}
+					}
+					return nil
+				})
+			log.Infof("agent cluster install %s is %s", agentClusterInstall.GetName(), operation)
+			return err
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create or update agent cluster install %s: %w", agentClusterInstall.GetName(), err)
+		}
+	}
+
+	for _, clusterSecret := range migrationResources.ClusterSecrets {
+		if err := s.ensureNamespace(ctx, clusterSecret.Namespace); err != nil {
+			return err
+		}
+		currentSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: clusterSecret.Name, Namespace: clusterSecret.Namespace},
+		}
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			operation, err := controllerutil.CreateOrUpdate(ctx, s.client, currentSecret,
+				func() error {
+					currentSecret.Annotations = clusterSecret.Annotations
+					currentSecret.Labels = clusterSecret.Labels
+					currentSecret.Finalizers = clusterSecret.Finalizers
+					currentSecret.Type = clusterSecret.Type
+					currentSecret.Data = clusterSecret.Data
+					currentSecret.StringData = clusterSecret.StringData
+					currentSecret.Immutable = clusterSecret.Immutable
+					return nil
+				})
+			log.Infof("cluster secret %s/%s is %s", clusterSecret.Namespace, clusterSecret.Name, operation)
+			return err
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create or update cluster secret %s/%s: %w", clusterSecret.Namespace, clusterSecret.Name, err)
 		}
 	}
 
@@ -784,6 +900,30 @@ func (s *MigrationTargetSyncer) rollbackDeploying(ctx context.Context, spec *mig
 		}
 	}
 
+	// 3. Remove ClusterDeployments from target hub if they exist
+	for _, clusterName := range spec.ManagedClusters {
+		if err := s.removeClusterDeployment(ctx, clusterName); err != nil {
+			log.Errorf("failed to remove cluster deployment %s: %v", clusterName, err)
+			return fmt.Errorf("failed to remove cluster deployment %s: %v", clusterName, err)
+		}
+	}
+
+	// 4. Remove AgentClusterInstalls from target hub if they exist
+	for _, clusterName := range spec.ManagedClusters {
+		if err := s.removeAgentClusterInstall(ctx, clusterName); err != nil {
+			log.Errorf("failed to remove agent cluster install %s: %v", clusterName, err)
+			return fmt.Errorf("failed to remove agent cluster install %s: %v", clusterName, err)
+		}
+	}
+
+	// 5. Remove cluster secrets from target hub if they exist
+	for _, clusterName := range spec.ManagedClusters {
+		if err := s.removeClusterSecrets(ctx, clusterName); err != nil {
+			log.Errorf("failed to remove cluster secrets %s: %v", clusterName, err)
+			return fmt.Errorf("failed to remove cluster secrets %s: %v", clusterName, err)
+		}
+	}
+
 	// roll back initializing
 	if err := s.rollbackInitializing(ctx, spec); err != nil {
 		return fmt.Errorf("failed to rollback initializing stage: %v", err)
@@ -836,6 +976,88 @@ func (s *MigrationTargetSyncer) removeKlusterletAddonConfig(ctx context.Context,
 	}
 
 	log.Infof("successfully removed klusterlet addon config: %s", clusterName)
+	return nil
+}
+
+// removeClusterDeployment removes a ClusterDeployment from the target hub
+func (s *MigrationTargetSyncer) removeClusterDeployment(ctx context.Context, clusterName string) error {
+	clusterDeployment := &unstructured.Unstructured{}
+	clusterDeployment.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "hive.openshift.io",
+		Version: "v1",
+		Kind:    "ClusterDeployment",
+	})
+
+	err := s.client.Get(ctx, types.NamespacedName{Name: clusterName, Namespace: clusterName}, clusterDeployment)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Infof("cluster deployment %s not found, already removed or was not present", clusterName)
+			return nil
+		}
+		return fmt.Errorf("failed to get cluster deployment %s: %w", clusterName, err)
+	}
+
+	if err := s.client.Delete(ctx, clusterDeployment); err != nil {
+		return fmt.Errorf("failed to delete cluster deployment %s: %w", clusterName, err)
+	}
+
+	log.Infof("successfully removed cluster deployment: %s", clusterName)
+	return nil
+}
+
+// removeAgentClusterInstall removes an AgentClusterInstall from the target hub
+func (s *MigrationTargetSyncer) removeAgentClusterInstall(ctx context.Context, clusterName string) error {
+	agentClusterInstall := &unstructured.Unstructured{}
+	agentClusterInstall.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "extensions.hive.openshift.io",
+		Version: "v1beta1",
+		Kind:    "AgentClusterInstall",
+	})
+
+	err := s.client.Get(ctx, types.NamespacedName{Name: clusterName, Namespace: clusterName}, agentClusterInstall)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Infof("agent cluster install %s not found, already removed or was not present", clusterName)
+			return nil
+		}
+		return fmt.Errorf("failed to get agent cluster install %s: %w", clusterName, err)
+	}
+
+	if err := s.client.Delete(ctx, agentClusterInstall); err != nil {
+		return fmt.Errorf("failed to delete agent cluster install %s: %w", clusterName, err)
+	}
+
+	log.Infof("successfully removed agent cluster install: %s", clusterName)
+	return nil
+}
+
+// removeClusterSecrets removes secrets with cluster name prefix from the target hub
+func (s *MigrationTargetSyncer) removeClusterSecrets(ctx context.Context, clusterName string) error {
+	secretList := &corev1.SecretList{}
+
+	// List all secrets in the cluster namespace (namespace = cluster name)
+	if err := s.client.List(ctx, secretList, client.InNamespace(clusterName)); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Infof("namespace %s not found, no cluster secrets to remove", clusterName)
+			return nil
+		}
+		return fmt.Errorf("failed to list secrets in namespace %s: %w", clusterName, err)
+	}
+
+	var deletedCount int
+	// Remove secrets that have cluster name as prefix
+	for _, secret := range secretList.Items {
+		if strings.HasPrefix(secret.Name, clusterName) {
+			if err := s.client.Delete(ctx, &secret); err != nil && !apierrors.IsNotFound(err) {
+				log.Errorf("failed to delete cluster secret %s/%s: %v", secret.Namespace, secret.Name, err)
+				return fmt.Errorf("failed to delete cluster secret %s/%s: %w", secret.Namespace, secret.Name, err)
+			}
+			deletedCount++
+			log.Infof("successfully removed cluster secret: %s/%s", secret.Namespace, secret.Name)
+		}
+	}
+
+	log.Infof("removed %d cluster secrets from namespace %s", deletedCount, clusterName)
 	return nil
 }
 

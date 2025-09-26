@@ -181,11 +181,20 @@ func (m *ClusterMigrationController) validateClustersInHub(
 		if len(mcm.Spec.IncludedManagedClusters) != 0 {
 			clusterList = mcm.Spec.IncludedManagedClusters
 		}
-		err := m.sendEventToSourceHub(ctx, hub, mcm, migrationv1alpha1.PhaseValidating,
-			clusterList, nil, "")
-		if err != nil {
-			return false, err
+		if hub == mcm.Spec.From {
+			err := m.sendEventToSourceHub(ctx, hub, mcm, migrationv1alpha1.PhaseValidating,
+				clusterList, nil, "")
+			if err != nil {
+				return false, err
+			}
+		} else if hub == mcm.Spec.To {
+			err := m.sendEventToTargetHub(ctx, mcm, migrationv1alpha1.PhaseValidating,
+				clusterList, "")
+			if err != nil {
+				return false, err
+			}
 		}
+
 		log.Infof("sent validating events to source hubs: %s", hub)
 		SetStarted(string(mcm.GetUID()), hub, migrationv1alpha1.PhaseValidating)
 	}
