@@ -13,11 +13,11 @@ import (
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 	cecontext "github.com/cloudevents/sdk-go/v2/context"
 	klusterletv1alpha1 "github.com/stolostron/cluster-lifecycle-api/klusterletconfig/v1alpha1"
-	addonv1 "github.com/stolostron/klusterlet-addon-controller/pkg/apis/agent/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer/yaml"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
@@ -177,12 +177,13 @@ func (s *MigrationSourceSyncer) cleaning(ctx context.Context, source *migration.
 // deploying: send clusters and addon config into target hub
 func (s *MigrationSourceSyncer) deploying(ctx context.Context, source *migration.MigrationSourceBundle) error {
 	migrationResources := &migration.MigrationResourceBundle{
-		MigrationId:           source.MigrationId,
-		ManagedClusters:       []clusterv1.ManagedCluster{},
-		KlusterletAddonConfig: []addonv1.KlusterletAddonConfig{},
+		MigrationId:        source.MigrationId,
+		ManagedClusters:    []clusterv1.ManagedCluster{},
+		MigrationResources: []unstructured.Unstructured{},
+		ClusterSecrets:     []corev1.Secret{},
 	}
 
-	// collect clusters and klusterletAddonConfig for migration
+	// collect clusters and migration resources
 	for _, managedCluster := range source.ManagedClusters {
 		// add cluster
 		cluster, err := s.prepareManagedClusterForMigration(ctx, managedCluster)
@@ -191,14 +192,29 @@ func (s *MigrationSourceSyncer) deploying(ctx context.Context, source *migration
 		}
 		migrationResources.ManagedClusters = append(migrationResources.ManagedClusters, *cluster)
 
-		// add addonConfig
-		addonConfig, err := s.prepareAddonConfigForMigration(ctx, managedCluster)
-		if err != nil {
-			return fmt.Errorf("failed to prepare addon config %s for migration: %w", managedCluster, err)
+		// collect all defined migration resources
+		for _, resourceType := range migrateResources {
+			resource, err := s.prepareUnstructuredResourceForMigration(ctx, managedCluster, resourceType.gvk, resourceType.gvk.Kind)
+			if err != nil {
+				if resourceType.isZTP {
+					log.Warnf("failed to prepare %s %s for migration: %v", resourceType.gvk.Kind, managedCluster, err)
+				} else {
+					return fmt.Errorf("failed to prepare %s %s for migration: %w", resourceType.gvk.Kind, managedCluster, err)
+				}
+			} else if resource != nil {
+				migrationResources.MigrationResources = append(migrationResources.MigrationResources, *resource)
+			}
 		}
-		migrationResources.KlusterletAddonConfig = append(migrationResources.KlusterletAddonConfig, *addonConfig)
+
+		// add secrets with cluster name prefix from cluster namespace
+		clusterSecrets, err := s.prepareClusterSecretsForMigration(ctx, managedCluster)
+		if err != nil {
+			log.Warnf("failed to prepare cluster secrets %s for migration: %v", managedCluster, err)
+		} else {
+			migrationResources.ClusterSecrets = append(migrationResources.ClusterSecrets, clusterSecrets...)
+		}
 	}
-	log.Info("deploying: attach clusters and addonConfigs into the event")
+	log.Info("deploying: attach clusters, addonConfigs, clusterDeployments, agentClusterInstalls, and clusterSecrets into the event")
 
 	payloadBytes, err := json.Marshal(migrationResources)
 	if err != nil {
@@ -424,25 +440,79 @@ func (s *MigrationSourceSyncer) prepareManagedClusterForMigration(ctx context.Co
 	return cluster, nil
 }
 
-// prepareAddonConfigForMigration prepares addon config for migration by cleaning metadata
-func (s *MigrationSourceSyncer) prepareAddonConfigForMigration(ctx context.Context, clusterName string) (
-	*addonv1.KlusterletAddonConfig, error,
-) {
-	addonConfig := &addonv1.KlusterletAddonConfig{}
-	if err := s.client.Get(ctx, types.NamespacedName{Name: clusterName, Namespace: clusterName}, addonConfig); err != nil {
-		return nil, fmt.Errorf("failed to get addon config %s: %w", clusterName, err)
+// prepareUnstructuredResourceForMigration prepares an unstructured resource for migration by cleaning metadata
+// The resource name and namespace should match the managed cluster name
+func (s *MigrationSourceSyncer) prepareUnstructuredResourceForMigration(
+	ctx context.Context,
+	clusterName string,
+	gvk schema.GroupVersionKind,
+	resourceType string,
+) (*unstructured.Unstructured, error) {
+	resource := &unstructured.Unstructured{}
+	resource.SetGroupVersionKind(gvk)
+
+	if err := s.client.Get(ctx, types.NamespacedName{Name: clusterName, Namespace: clusterName}, resource); err != nil {
+		if apierrors.IsNotFound(err) {
+			// Resource is optional, so return nil if not found
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get %s %s: %w", resourceType, clusterName, err)
 	}
 
 	// Clean metadata for migration
-	s.cleanObjectMetadata(addonConfig)
-	addonConfig.Status = addonv1.KlusterletAddonConfigStatus{}
-	annotations := addonConfig.GetAnnotations()
+	s.cleanObjectMetadata(resource)
+
+	// Preserve status field - do not remove it as it should be migrated
+
+	// Remove any kubectl last-applied-configuration annotations
+	annotations := resource.GetAnnotations()
 	if annotations != nil {
 		delete(annotations, kubectlConfigAnnotation)
-		addonConfig.SetAnnotations(annotations)
+		resource.SetAnnotations(annotations)
 	}
 
-	return addonConfig, nil
+	return resource, nil
+}
+
+// prepareClusterSecretsForMigration prepares cluster-related secrets for migration
+// It collects secrets from the cluster namespace that have the cluster name as prefix
+func (s *MigrationSourceSyncer) prepareClusterSecretsForMigration(ctx context.Context, clusterName string) (
+	[]corev1.Secret, error,
+) {
+	secretList := &corev1.SecretList{}
+
+	// List all secrets in the cluster namespace (namespace = cluster name)
+	if err := s.client.List(ctx, secretList, client.InNamespace(clusterName)); err != nil {
+		if apierrors.IsNotFound(err) {
+			// Namespace doesn't exist, return empty list
+			return []corev1.Secret{}, nil
+		}
+		return nil, fmt.Errorf("failed to list secrets in namespace %s: %w", clusterName, err)
+	}
+
+	var clusterSecrets []corev1.Secret
+
+	// Filter secrets that have cluster name as prefix
+	for _, secret := range secretList.Items {
+		if strings.HasPrefix(secret.Name, clusterName) {
+			// Clean metadata for migration
+			preparedSecret := secret.DeepCopy()
+			s.cleanObjectMetadata(preparedSecret)
+
+			// Remove any kubectl last-applied-configuration annotations
+			annotations := preparedSecret.GetAnnotations()
+			if annotations != nil {
+				delete(annotations, kubectlConfigAnnotation)
+				preparedSecret.SetAnnotations(annotations)
+			}
+
+			clusterSecrets = append(clusterSecrets, *preparedSecret)
+			log.Debugf("prepared secret %s/%s for migration", preparedSecret.Namespace, preparedSecret.Name)
+		}
+	}
+
+	log.Infof("prepared %d cluster secrets for migration from namespace %s", len(clusterSecrets), clusterName)
+	return clusterSecrets, nil
 }
 
 // cleanObjectMetadata removes metadata fields that should not be migrated

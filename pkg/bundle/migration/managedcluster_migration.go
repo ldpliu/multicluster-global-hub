@@ -1,8 +1,8 @@
 package migration
 
 import (
-	addonv1 "github.com/stolostron/klusterlet-addon-controller/pkg/apis/agent/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 )
 
@@ -48,7 +48,8 @@ type MigrationStatusBundle struct {
 }
 
 type MigrationResourceBundle struct {
-	MigrationId           string                          `json:"migrationId"`
-	ManagedClusters       []clusterv1.ManagedCluster      `json:"managedClusters,omitempty"`
-	KlusterletAddonConfig []addonv1.KlusterletAddonConfig `json:"klusterletAddonConfigs,omitempty"`
+	MigrationId             string                      `json:"migrationId"`
+	ManagedClusters         []clusterv1.ManagedCluster  `json:"managedClusters,omitempty"`
+	MigrationResources      []unstructured.Unstructured `json:"migrationResources,omitempty"`
+	ClusterSecrets          []corev1.Secret             `json:"clusterSecrets,omitempty"`
 }

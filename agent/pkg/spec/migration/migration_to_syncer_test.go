@@ -9,10 +9,11 @@ import (
 	"testing"
 	"time"
 
-	addonv1 "github.com/stolostron/klusterlet-addon-controller/pkg/apis/agent/v1"
 	"github.com/stretchr/testify/assert"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 	operatorv1 "open-cluster-management.io/api/operator/v1"
@@ -771,45 +772,56 @@ func TestMigrationToSyncer(t *testing.T) {
 				ManagedServiceAccountInstallNamespace: "test",
 				ManagedClusters:                       []string{"cluster1", "cluster2"},
 			},
-			initObjects: []client.Object{
-				&operatorv1.ClusterManager{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "cluster-manager",
+			initObjects: func() []client.Object {
+				// Create KlusterletAddonConfig resources as unstructured
+				klusterletAddonConfig1 := &unstructured.Unstructured{}
+				klusterletAddonConfig1.SetGroupVersionKind(schema.GroupVersionKind{
+					Group:   "agent.open-cluster-management.io",
+					Version: "v1",
+					Kind:    "KlusterletAddonConfig",
+				})
+				klusterletAddonConfig1.SetName("cluster1")
+				klusterletAddonConfig1.SetNamespace("cluster1")
+
+				klusterletAddonConfig2 := &unstructured.Unstructured{}
+				klusterletAddonConfig2.SetGroupVersionKind(schema.GroupVersionKind{
+					Group:   "agent.open-cluster-management.io",
+					Version: "v1",
+					Kind:    "KlusterletAddonConfig",
+				})
+				klusterletAddonConfig2.SetName("cluster2")
+				klusterletAddonConfig2.SetNamespace("cluster2")
+
+				return []client.Object{
+					&operatorv1.ClusterManager{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "cluster-manager",
+						},
+						Spec: operatorv1.ClusterManagerSpec{
+							RegistrationImagePullSpec: "test",
+							WorkImagePullSpec:         "test",
+						},
 					},
-					Spec: operatorv1.ClusterManagerSpec{
-						RegistrationImagePullSpec: "test",
-						WorkImagePullSpec:         "test",
+					&clusterv1.ManagedCluster{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "cluster1",
+						},
+						Spec: clusterv1.ManagedClusterSpec{
+							HubAcceptsClient: true,
+						},
 					},
-				},
-				&clusterv1.ManagedCluster{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "cluster1",
+					&clusterv1.ManagedCluster{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "cluster2",
+						},
+						Spec: clusterv1.ManagedClusterSpec{
+							HubAcceptsClient: true,
+						},
 					},
-					Spec: clusterv1.ManagedClusterSpec{
-						HubAcceptsClient: true,
-					},
-				},
-				&clusterv1.ManagedCluster{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "cluster2",
-					},
-					Spec: clusterv1.ManagedClusterSpec{
-						HubAcceptsClient: true,
-					},
-				},
-				&addonv1.KlusterletAddonConfig{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "cluster1",
-						Namespace: "cluster1",
-					},
-				},
-				&addonv1.KlusterletAddonConfig{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "cluster2",
-						Namespace: "cluster2",
-					},
-				},
-			},
+					klusterletAddonConfig1,
+					klusterletAddonConfig2,
+				}
+			}(),
 			expectedClusterManager: nil, // No changes expected to cluster manager during rollback
 		},
 	}
@@ -1038,6 +1050,16 @@ func TestMigrationDestinationHubSyncer(t *testing.T) {
 func TestDeploying(t *testing.T) {
 	migrationId := "123"
 
+	// Create KlusterletAddonConfig as unstructured resource
+	klusterletAddonConfig := &unstructured.Unstructured{}
+	klusterletAddonConfig.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "agent.open-cluster-management.io",
+		Version: "v1",
+		Kind:    "KlusterletAddonConfig",
+	})
+	klusterletAddonConfig.SetName("cluster1")
+	klusterletAddonConfig.SetNamespace("cluster1")
+
 	evt := utils.ToCloudEvent("test", "hub1", "hub2", migration.MigrationResourceBundle{
 		MigrationId: migrationId,
 		ManagedClusters: []clusterv1.ManagedCluster{
@@ -1051,14 +1073,7 @@ func TestDeploying(t *testing.T) {
 				},
 			},
 		},
-		KlusterletAddonConfig: []addonv1.KlusterletAddonConfig{
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "cluster1",
-					Namespace: "cluster1",
-				},
-			},
-		},
+		MigrationResources: []unstructured.Unstructured{*klusterletAddonConfig},
 	})
 
 	scheme := configs.GetRuntimeScheme()

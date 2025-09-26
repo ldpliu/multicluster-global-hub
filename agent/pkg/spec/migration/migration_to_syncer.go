@@ -7,17 +7,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 	cecontext "github.com/cloudevents/sdk-go/v2/context"
-	addonv1 "github.com/stolostron/klusterlet-addon-controller/pkg/apis/agent/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
@@ -376,24 +377,72 @@ func (s *MigrationTargetSyncer) syncMigrationResources(ctx context.Context,
 			return fmt.Errorf("failed to create or update managed cluster %s: %w", mc.Name, err)
 		}
 	}
-	for _, config := range migrationResources.KlusterletAddonConfig {
-		currentKlusterletAddonConfig := &addonv1.KlusterletAddonConfig{
-			ObjectMeta: metav1.ObjectMeta{Name: config.Name, Namespace: config.Namespace},
+	// Process all migration resources using generic approach
+	for _, resource := range migrationResources.MigrationResources {
+		if err := s.ensureNamespace(ctx, resource.GetNamespace()); err != nil {
+			return err
 		}
+
+		// Create a new unstructured object with same GVK and name/namespace
+		currentResource := &unstructured.Unstructured{}
+		currentResource.SetGroupVersionKind(resource.GetObjectKind().GroupVersionKind())
+		currentResource.SetName(resource.GetName())
+		currentResource.SetNamespace(resource.GetNamespace())
+
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			operation, err := controllerutil.CreateOrUpdate(ctx, s.client, currentKlusterletAddonConfig,
+			operation, err := controllerutil.CreateOrUpdate(ctx, s.client, currentResource,
 				func() error {
-					currentKlusterletAddonConfig.Annotations = config.Annotations
-					currentKlusterletAddonConfig.Labels = config.Labels
-					currentKlusterletAddonConfig.Spec = config.Spec
-					currentKlusterletAddonConfig.Finalizers = config.Finalizers
+					currentResource.SetAnnotations(resource.GetAnnotations())
+					currentResource.SetLabels(resource.GetLabels())
+					currentResource.SetFinalizers(resource.GetFinalizers())
+					// Copy spec from source
+					if spec, found, err := unstructured.NestedMap(resource.Object, "spec"); err == nil && found {
+						err := unstructured.SetNestedMap(currentResource.Object, spec, "spec")
+						if err != nil {
+							return err
+						}
+					}
+					// Copy status from source if needed
+					if status, found, err := unstructured.NestedMap(resource.Object, "status"); err == nil && found {
+						err := unstructured.SetNestedMap(currentResource.Object, status, "status")
+						if err != nil {
+							return err
+						}
+					}
 					return nil
 				})
-			log.Infof("klusterlet addon config %s is %s", config.Name, operation)
+			log.Infof("%s %s is %s", resource.GetKind(), resource.GetName(), operation)
 			return err
 		})
 		if err != nil {
-			return fmt.Errorf("failed to create or update klusterlet addon config %s: %w", config.Name, err)
+			return fmt.Errorf("failed to create or update %s %s: %w", resource.GetKind(), resource.GetName(), err)
+		}
+	}
+
+	for _, clusterSecret := range migrationResources.ClusterSecrets {
+		if err := s.ensureNamespace(ctx, clusterSecret.Namespace); err != nil {
+			return err
+		}
+		currentSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: clusterSecret.Name, Namespace: clusterSecret.Namespace},
+		}
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			operation, err := controllerutil.CreateOrUpdate(ctx, s.client, currentSecret,
+				func() error {
+					currentSecret.Annotations = clusterSecret.Annotations
+					currentSecret.Labels = clusterSecret.Labels
+					currentSecret.Finalizers = clusterSecret.Finalizers
+					currentSecret.Type = clusterSecret.Type
+					currentSecret.Data = clusterSecret.Data
+					currentSecret.StringData = clusterSecret.StringData
+					currentSecret.Immutable = clusterSecret.Immutable
+					return nil
+				})
+			log.Infof("cluster secret %s/%s is %s", clusterSecret.Namespace, clusterSecret.Name, operation)
+			return err
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create or update cluster secret %s/%s: %w", clusterSecret.Namespace, clusterSecret.Name, err)
 		}
 	}
 
@@ -776,11 +825,25 @@ func (s *MigrationTargetSyncer) rollbackDeploying(ctx context.Context, spec *mig
 		}
 	}
 
-	// 2. Remove KlusterletAddonConfigs from target hub
+	// 2. Remove migration resources from target hub using generic approach
 	for _, clusterName := range spec.ManagedClusters {
-		if err := s.removeKlusterletAddonConfig(ctx, clusterName); err != nil {
-			log.Errorf("failed to remove klusterlet addon config %s: %v", clusterName, err)
-			return fmt.Errorf("failed to remove klusterlet addon config %s: %v", clusterName, err)
+		for _, resourceType := range migrateResources {
+			if err := s.removeMigrationResource(ctx, clusterName, resourceType); err != nil {
+				if resourceType.isZTP {
+					log.Warnf("failed to remove %s %s: %v", resourceType.gvk.Kind, clusterName, err)
+				} else {
+					log.Errorf("failed to remove %s %s: %v", resourceType.gvk.Kind, clusterName, err)
+					return fmt.Errorf("failed to remove %s %s: %v", resourceType.gvk.Kind, clusterName, err)
+				}
+			}
+		}
+	}
+
+	// 5. Remove cluster secrets from target hub if they exist
+	for _, clusterName := range spec.ManagedClusters {
+		if err := s.removeClusterSecrets(ctx, clusterName); err != nil {
+			log.Errorf("failed to remove cluster secrets %s: %v", clusterName, err)
+			return fmt.Errorf("failed to remove cluster secrets %s: %v", clusterName, err)
 		}
 	}
 
@@ -819,23 +882,55 @@ func (s *MigrationTargetSyncer) removeManagedCluster(ctx context.Context, cluste
 	return nil
 }
 
-// removeKlusterletAddonConfig removes a KlusterletAddonConfig from the target hub
-func (s *MigrationTargetSyncer) removeKlusterletAddonConfig(ctx context.Context, clusterName string) error {
-	addonConfig := &addonv1.KlusterletAddonConfig{}
-	err := s.client.Get(ctx, types.NamespacedName{Name: clusterName, Namespace: clusterName}, addonConfig)
+// removeMigrationResource removes a migration resource from the target hub using generic approach
+func (s *MigrationTargetSyncer) removeMigrationResource(ctx context.Context, clusterName string, resourceType MigrationResourceType) error {
+	resource := &unstructured.Unstructured{}
+	resource.SetGroupVersionKind(resourceType.gvk)
+
+	err := s.client.Get(ctx, types.NamespacedName{Name: clusterName, Namespace: clusterName}, resource)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			log.Infof("klusterlet addon config %s not found, already removed", clusterName)
+			log.Infof("%s %s not found, already removed or was not present", resourceType.gvk.Kind, clusterName)
 			return nil
 		}
-		return fmt.Errorf("failed to get klusterlet addon config %s: %w", clusterName, err)
+		return fmt.Errorf("failed to get %s %s: %w", resourceType.gvk.Kind, clusterName, err)
 	}
 
-	if err := s.client.Delete(ctx, addonConfig); err != nil {
-		return fmt.Errorf("failed to delete klusterlet addon config %s: %w", clusterName, err)
+	if err := s.client.Delete(ctx, resource); err != nil {
+		return fmt.Errorf("failed to delete %s %s: %w", resourceType.gvk.Kind, clusterName, err)
 	}
 
-	log.Infof("successfully removed klusterlet addon config: %s", clusterName)
+	log.Infof("successfully removed %s: %s", resourceType.gvk.Kind, clusterName)
+	return nil
+}
+
+// removeClusterSecrets removes secrets with cluster name prefix from the target hub
+func (s *MigrationTargetSyncer) removeClusterSecrets(ctx context.Context, clusterName string) error {
+	secretList := &corev1.SecretList{}
+
+	// List all secrets in the cluster namespace (namespace = cluster name)
+	if err := s.client.List(ctx, secretList, client.InNamespace(clusterName)); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Infof("namespace %s not found, no cluster secrets to remove", clusterName)
+			return nil
+		}
+		return fmt.Errorf("failed to list secrets in namespace %s: %w", clusterName, err)
+	}
+
+	var deletedCount int
+	// Remove secrets that have cluster name as prefix
+	for _, secret := range secretList.Items {
+		if strings.HasPrefix(secret.Name, clusterName) {
+			if err := s.client.Delete(ctx, &secret); err != nil && !apierrors.IsNotFound(err) {
+				log.Errorf("failed to delete cluster secret %s/%s: %v", secret.Namespace, secret.Name, err)
+				return fmt.Errorf("failed to delete cluster secret %s/%s: %w", secret.Namespace, secret.Name, err)
+			}
+			deletedCount++
+			log.Infof("successfully removed cluster secret: %s/%s", secret.Namespace, secret.Name)
+		}
+	}
+
+	log.Infof("removed %d cluster secrets from namespace %s", deletedCount, clusterName)
 	return nil
 }
 
