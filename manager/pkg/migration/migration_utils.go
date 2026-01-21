@@ -163,6 +163,24 @@ func (m *ClusterMigrationController) UpdateSuccessClustersToConfigMap(ctx contex
 	})
 }
 
+// UpdateSuccessAndFailureClustersToConfigMap updates the ConfigMap with both successful and failed
+// cluster information. It only updates the keys that have non-empty cluster lists.
+func (m *ClusterMigrationController) UpdateSuccessAndFailureClustersToConfigMap(ctx context.Context,
+	mcm *migrationv1alpha1.ManagedClusterMigration, successClusters, failedClusters []string,
+) error {
+	clustersMap := make(map[string][]string)
+	if len(successClusters) > 0 {
+		clustersMap[successClustersConfigMapKey] = successClusters
+	}
+	if len(failedClusters) > 0 {
+		clustersMap[failedClustersConfigMapKey] = failedClusters
+	}
+	if len(clustersMap) == 0 {
+		return nil
+	}
+	return m.storeClustersToConfigMap(ctx, mcm, clustersMap)
+}
+
 // UpdateAllClustersToConfigMap updates the ConfigMap with all cluster information.
 // Currently it only stores successful clusters, but the name suggests it should handle all clusters.
 // This function appears to be a duplicate of UpdateSuccessClustersConfimap.
@@ -241,6 +259,8 @@ func (m *ClusterMigrationController) GetFailureClusters(ctx context.Context,
 
 // getClusterFromConfigMap attempts to retrieve clusters from an existing ConfigMap
 // Returns clusters slice, found boolean, and error
+// If the key is allClustersConfigMapKey and it doesn't exist, it will join the clusters
+// from successClustersConfigMapKey and failedClustersConfigMapKey and return them.
 func (m *ClusterMigrationController) getClusterFromConfigMap(ctx context.Context, name,
 	namespace string, key string,
 ) ([]string, error) {
@@ -265,6 +285,34 @@ func (m *ClusterMigrationController) getClusterFromConfigMap(ctx context.Context
 		log.Infof("retrieved clusters from existing ConfigMap %s/%s for migration %s",
 			namespace, name, name)
 		return clusters, nil
+	}
+
+	// If the key is allClustersConfigMapKey and it doesn't exist,
+	// join clusters from successClustersConfigMapKey and failedClustersConfigMapKey
+	if key == allClustersConfigMapKey {
+		var allClusters []string
+
+		if successJSON, exists := existingConfigMap.Data[successClustersConfigMapKey]; exists {
+			var successClusters []string
+			if err := json.Unmarshal([]byte(successJSON), &successClusters); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal success clusters from ConfigMap: %w", err)
+			}
+			allClusters = append(allClusters, successClusters...)
+		}
+
+		if failedJSON, exists := existingConfigMap.Data[failedClustersConfigMapKey]; exists {
+			var failedClusters []string
+			if err := json.Unmarshal([]byte(failedJSON), &failedClusters); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal failed clusters from ConfigMap: %w", err)
+			}
+			allClusters = append(allClusters, failedClusters...)
+		}
+
+		if len(allClusters) > 0 {
+			log.Infof("retrieved all clusters by joining success and failed clusters from ConfigMap %s/%s",
+				namespace, name)
+			return allClusters, nil
+		}
 	}
 
 	return nil, nil

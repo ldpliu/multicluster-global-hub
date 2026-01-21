@@ -4,16 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	migrationv1alpha1 "github.com/stolostron/multicluster-global-hub/operator/api/migration/v1alpha1"
+	"github.com/stolostron/multicluster-global-hub/pkg/constants"
 	"github.com/stolostron/multicluster-global-hub/pkg/utils"
 )
 
@@ -302,4 +305,564 @@ func TestUpdateFailedClustersConfimap_ErrorCases(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to unmarshal clusters from ConfigMap")
 	})
+}
+
+// TestHandleRollbackRetryRequest tests the handleRollbackRetryRequest function which allows
+// users to trigger a rollback retry for failed migrations via annotation.
+func TestHandleRollbackRetryRequest(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = migrationv1alpha1.AddToScheme(scheme)
+
+	tests := []struct {
+		name                    string
+		migration               *migrationv1alpha1.ManagedClusterMigration
+		expectedRequeue         bool
+		expectedPhase           string
+		expectAnnotationRemoved bool
+	}{
+		{
+			name: "Failed migration with rollback annotation - should trigger rollback retry",
+			migration: &migrationv1alpha1.ManagedClusterMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-migration",
+					Namespace: utils.GetDefaultNamespace(),
+					UID:       types.UID("test-uid-1"),
+					Annotations: map[string]string{
+						constants.MigrationRequestAnnotationKey: constants.MigrationRollbackAnnotationValue,
+					},
+				},
+				Spec: migrationv1alpha1.ManagedClusterMigrationSpec{
+					From: "hub1",
+					To:   "hub2",
+				},
+				Status: migrationv1alpha1.ManagedClusterMigrationStatus{
+					Phase: migrationv1alpha1.PhaseFailed,
+					Conditions: []metav1.Condition{
+						{
+							Type:   migrationv1alpha1.ConditionTypeRolledBack,
+							Status: metav1.ConditionFalse,
+							Reason: "Error",
+						},
+					},
+				},
+			},
+			expectedRequeue:         true,
+			expectedPhase:           migrationv1alpha1.PhaseRollbacking,
+			expectAnnotationRemoved: true,
+		},
+		{
+			name: "Failed migration without annotation - should not trigger rollback",
+			migration: &migrationv1alpha1.ManagedClusterMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-migration",
+					Namespace: utils.GetDefaultNamespace(),
+					UID:       types.UID("test-uid-2"),
+				},
+				Spec: migrationv1alpha1.ManagedClusterMigrationSpec{
+					From: "hub1",
+					To:   "hub2",
+				},
+				Status: migrationv1alpha1.ManagedClusterMigrationStatus{
+					Phase: migrationv1alpha1.PhaseFailed,
+				},
+			},
+			expectedRequeue: false,
+			expectedPhase:   migrationv1alpha1.PhaseFailed,
+		},
+		{
+			name: "Non-failed migration with annotation - should not trigger rollback",
+			migration: &migrationv1alpha1.ManagedClusterMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-migration",
+					Namespace: utils.GetDefaultNamespace(),
+					UID:       types.UID("test-uid-3"),
+					Annotations: map[string]string{
+						constants.MigrationRequestAnnotationKey: constants.MigrationRollbackAnnotationValue,
+					},
+				},
+				Spec: migrationv1alpha1.ManagedClusterMigrationSpec{
+					From: "hub1",
+					To:   "hub2",
+				},
+				Status: migrationv1alpha1.ManagedClusterMigrationStatus{
+					Phase: migrationv1alpha1.PhaseRegistering,
+				},
+			},
+			expectedRequeue: false,
+			expectedPhase:   migrationv1alpha1.PhaseRegistering,
+		},
+		{
+			name: "Failed migration with wrong annotation value - should not trigger rollback",
+			migration: &migrationv1alpha1.ManagedClusterMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-migration",
+					Namespace: utils.GetDefaultNamespace(),
+					UID:       types.UID("test-uid-4"),
+					Annotations: map[string]string{
+						constants.MigrationRequestAnnotationKey: "invalid-value",
+					},
+				},
+				Spec: migrationv1alpha1.ManagedClusterMigrationSpec{
+					From: "hub1",
+					To:   "hub2",
+				},
+				Status: migrationv1alpha1.ManagedClusterMigrationStatus{
+					Phase: migrationv1alpha1.PhaseFailed,
+				},
+			},
+			expectedRequeue: false,
+			expectedPhase:   migrationv1alpha1.PhaseFailed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(tt.migration).
+				WithStatusSubresource(tt.migration).
+				Build()
+
+			controller := &ClusterMigrationController{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			// Initialize migration status in memory
+			AddMigrationStatus(string(tt.migration.UID))
+			defer RemoveMigrationStatus(string(tt.migration.UID))
+
+			req := ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      tt.migration.Name,
+					Namespace: tt.migration.Namespace,
+				},
+			}
+
+			requeue, err := controller.handleRollbackRetryRequest(context.TODO(), req)
+
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expectedRequeue, requeue)
+
+			// Verify the migration state after the call
+			updatedMigration := &migrationv1alpha1.ManagedClusterMigration{}
+			err = fakeClient.Get(context.TODO(), req.NamespacedName, updatedMigration)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expectedPhase, updatedMigration.Status.Phase)
+
+			// Verify annotation was removed if expected
+			if tt.expectAnnotationRemoved {
+				_, exists := updatedMigration.Annotations[constants.MigrationRequestAnnotationKey]
+				assert.False(t, exists, "Annotation should be removed after triggering rollback retry")
+			}
+		})
+	}
+}
+
+// TestHandleRollbackRetryRequest_MigrationNotFound tests the case when migration is not found
+func TestHandleRollbackRetryRequest_MigrationNotFound(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = migrationv1alpha1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	controller := &ClusterMigrationController{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      "non-existent-migration",
+			Namespace: utils.GetDefaultNamespace(),
+		},
+	}
+
+	requeue, err := controller.handleRollbackRetryRequest(context.TODO(), req)
+
+	assert.NoError(t, err)
+	assert.False(t, requeue)
+}
+
+// TestHandleRollbackRetryRequest_ConditionReset verifies that the RolledBack condition is properly
+// reset with a fresh LastTransitionTime when rollback retry is requested
+func TestHandleRollbackRetryRequest_ConditionReset(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = migrationv1alpha1.AddToScheme(scheme)
+
+	// Create a migration with an existing RolledBack condition that has an old LastTransitionTime
+	oldTime := metav1.NewTime(time.Now().Add(-10 * time.Minute))
+	migration := &migrationv1alpha1.ManagedClusterMigration{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-migration-condition-reset",
+			Namespace: utils.GetDefaultNamespace(),
+			UID:       types.UID("test-uid-condition-reset"),
+			Annotations: map[string]string{
+				constants.MigrationRequestAnnotationKey: constants.MigrationRollbackAnnotationValue,
+			},
+		},
+		Spec: migrationv1alpha1.ManagedClusterMigrationSpec{
+			From: "hub1",
+			To:   "hub2",
+		},
+		Status: migrationv1alpha1.ManagedClusterMigrationStatus{
+			Phase: migrationv1alpha1.PhaseFailed,
+			Conditions: []metav1.Condition{
+				{
+					Type:               migrationv1alpha1.ConditionTypeRolledBack,
+					Status:             metav1.ConditionFalse,
+					Reason:             ConditionReasonTimeout,
+					Message:            "Rollback timed out waiting for agents",
+					LastTransitionTime: oldTime,
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(migration).
+		WithStatusSubresource(migration).
+		Build()
+
+	controller := &ClusterMigrationController{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Initialize migration status in memory
+	AddMigrationStatus(string(migration.UID))
+	defer RemoveMigrationStatus(string(migration.UID))
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      migration.Name,
+			Namespace: migration.Namespace,
+		},
+	}
+
+	beforeUpdate := time.Now()
+	requeue, err := controller.handleRollbackRetryRequest(context.TODO(), req)
+
+	assert.NoError(t, err)
+	assert.True(t, requeue, "Should requeue after rollback retry request")
+
+	// Fetch the updated migration
+	updatedMigration := &migrationv1alpha1.ManagedClusterMigration{}
+	err = fakeClient.Get(context.TODO(), req.NamespacedName, updatedMigration)
+	assert.NoError(t, err)
+
+	// Verify the RolledBack condition was reset
+	var rolledBackCondition *metav1.Condition
+	for i := range updatedMigration.Status.Conditions {
+		if updatedMigration.Status.Conditions[i].Type == migrationv1alpha1.ConditionTypeRolledBack {
+			rolledBackCondition = &updatedMigration.Status.Conditions[i]
+			break
+		}
+	}
+
+	assert.NotNil(t, rolledBackCondition, "RolledBack condition should exist")
+	assert.Equal(t, metav1.ConditionFalse, rolledBackCondition.Status)
+	assert.Equal(t, ConditionReasonWaiting, rolledBackCondition.Reason)
+	assert.Equal(t, "Rollback retry requested via annotation", rolledBackCondition.Message)
+
+	// Critical: LastTransitionTime should be updated to now (not the old time)
+	assert.True(t, rolledBackCondition.LastTransitionTime.After(oldTime.Time),
+		"LastTransitionTime should be after the old time")
+
+	// Allow for 2 second tolerance
+	timeDiff := beforeUpdate.Sub(rolledBackCondition.LastTransitionTime.Time)
+	assert.True(t, timeDiff < 2*time.Second && timeDiff > -2*time.Second,
+		"LastTransitionTime should be within 2 seconds of now, got diff: %v", timeDiff)
+}
+
+// TestHandleRollbackRetryRequest_StageStateReset verifies that the in-memory stage state is reset
+// for both source and target hubs when rollback retry is requested
+func TestHandleRollbackRetryRequest_StageStateReset(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = migrationv1alpha1.AddToScheme(scheme)
+
+	migration := &migrationv1alpha1.ManagedClusterMigration{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-migration-stage-reset",
+			Namespace: utils.GetDefaultNamespace(),
+			UID:       types.UID("test-uid-stage-reset"),
+			Annotations: map[string]string{
+				constants.MigrationRequestAnnotationKey: constants.MigrationRollbackAnnotationValue,
+			},
+		},
+		Spec: migrationv1alpha1.ManagedClusterMigrationSpec{
+			From: "source-hub",
+			To:   "target-hub",
+		},
+		Status: migrationv1alpha1.ManagedClusterMigrationStatus{
+			Phase: migrationv1alpha1.PhaseFailed,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(migration).
+		WithStatusSubresource(migration).
+		Build()
+
+	controller := &ClusterMigrationController{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	migrationID := string(migration.UID)
+	sourceHub := migration.Spec.From
+	targetHub := migration.Spec.To
+	rollbackingPhase := migrationv1alpha1.PhaseRollbacking
+
+	// Initialize migration status in memory
+	AddMigrationStatus(migrationID)
+	defer RemoveMigrationStatus(migrationID)
+
+	// Set up stage state as if rollback had failed
+	SetStarted(migrationID, sourceHub, rollbackingPhase)
+	SetFinished(migrationID, sourceHub, rollbackingPhase)
+	SetErrorMessage(migrationID, sourceHub, rollbackingPhase, "source rollback failed")
+
+	SetStarted(migrationID, targetHub, rollbackingPhase)
+	SetFinished(migrationID, targetHub, rollbackingPhase)
+	SetErrorMessage(migrationID, targetHub, rollbackingPhase, "target rollback failed")
+
+	// Verify initial state is set
+	assert.True(t, GetStarted(migrationID, sourceHub, rollbackingPhase))
+	assert.True(t, GetFinished(migrationID, sourceHub, rollbackingPhase))
+	assert.True(t, GetStarted(migrationID, targetHub, rollbackingPhase))
+	assert.True(t, GetFinished(migrationID, targetHub, rollbackingPhase))
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      migration.Name,
+			Namespace: migration.Namespace,
+		},
+	}
+
+	requeue, err := controller.handleRollbackRetryRequest(context.TODO(), req)
+
+	assert.NoError(t, err)
+	assert.True(t, requeue)
+
+	// Verify stage state was reset for both hubs
+	assert.False(t, GetStarted(migrationID, sourceHub, rollbackingPhase),
+		"Source hub rollback state should be reset")
+	assert.False(t, GetFinished(migrationID, sourceHub, rollbackingPhase),
+		"Source hub rollback state should be reset")
+	assert.Empty(t, GetErrorMessage(migrationID, sourceHub, rollbackingPhase),
+		"Source hub error message should be cleared")
+
+	assert.False(t, GetStarted(migrationID, targetHub, rollbackingPhase),
+		"Target hub rollback state should be reset")
+	assert.False(t, GetFinished(migrationID, targetHub, rollbackingPhase),
+		"Target hub rollback state should be reset")
+	assert.Empty(t, GetErrorMessage(migrationID, targetHub, rollbackingPhase),
+		"Target hub error message should be cleared")
+}
+
+// TestHandleRollbackRetryRequest_DifferentAnnotationKeys tests that other annotations don't trigger rollback
+func TestHandleRollbackRetryRequest_DifferentAnnotationKeys(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = migrationv1alpha1.AddToScheme(scheme)
+
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		expectPhase string
+	}{
+		{
+			name: "Different annotation key should not trigger rollback",
+			annotations: map[string]string{
+				"some-other-annotation": constants.MigrationRollbackAnnotationValue,
+			},
+			expectPhase: migrationv1alpha1.PhaseFailed,
+		},
+		{
+			name: "Empty annotation key should not trigger rollback",
+			annotations: map[string]string{
+				"": constants.MigrationRollbackAnnotationValue,
+			},
+			expectPhase: migrationv1alpha1.PhaseFailed,
+		},
+		{
+			name: "Mixed annotations without the correct key should not trigger rollback",
+			annotations: map[string]string{
+				"annotation1": "value1",
+				"annotation2": "value2",
+			},
+			expectPhase: migrationv1alpha1.PhaseFailed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			migration := &migrationv1alpha1.ManagedClusterMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "test-migration-annotation",
+					Namespace:   utils.GetDefaultNamespace(),
+					UID:         types.UID("test-uid-annotation"),
+					Annotations: tt.annotations,
+				},
+				Spec: migrationv1alpha1.ManagedClusterMigrationSpec{
+					From: "hub1",
+					To:   "hub2",
+				},
+				Status: migrationv1alpha1.ManagedClusterMigrationStatus{
+					Phase: migrationv1alpha1.PhaseFailed,
+				},
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(migration).
+				WithStatusSubresource(migration).
+				Build()
+
+			controller := &ClusterMigrationController{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			req := ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      migration.Name,
+					Namespace: migration.Namespace,
+				},
+			}
+
+			requeue, err := controller.handleRollbackRetryRequest(context.TODO(), req)
+
+			assert.NoError(t, err)
+			assert.False(t, requeue)
+
+			// Verify phase is unchanged
+			updatedMigration := &migrationv1alpha1.ManagedClusterMigration{}
+			err = fakeClient.Get(context.TODO(), req.NamespacedName, updatedMigration)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expectPhase, updatedMigration.Status.Phase)
+		})
+	}
+}
+
+// TestHandleRollbackRetryRequest_AllPhasesExceptFailed tests that non-Failed phases are not processed
+func TestHandleRollbackRetryRequest_AllPhasesExceptFailed(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = migrationv1alpha1.AddToScheme(scheme)
+
+	phases := []string{
+		migrationv1alpha1.PhasePending,
+		migrationv1alpha1.PhaseValidating,
+		migrationv1alpha1.PhaseInitializing,
+		migrationv1alpha1.PhaseDeploying,
+		migrationv1alpha1.PhaseCleaning,
+		migrationv1alpha1.PhaseRegistering,
+		migrationv1alpha1.PhaseCompleted,
+		migrationv1alpha1.PhaseRollbacking,
+	}
+
+	for _, phase := range phases {
+		t.Run("Phase_"+phase, func(t *testing.T) {
+			migration := &migrationv1alpha1.ManagedClusterMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-migration-" + phase,
+					Namespace: utils.GetDefaultNamespace(),
+					UID:       types.UID("test-uid-" + phase),
+					Annotations: map[string]string{
+						constants.MigrationRequestAnnotationKey: constants.MigrationRollbackAnnotationValue,
+					},
+				},
+				Spec: migrationv1alpha1.ManagedClusterMigrationSpec{
+					From: "hub1",
+					To:   "hub2",
+				},
+				Status: migrationv1alpha1.ManagedClusterMigrationStatus{
+					Phase: phase,
+				},
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(migration).
+				WithStatusSubresource(migration).
+				Build()
+
+			controller := &ClusterMigrationController{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			req := ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      migration.Name,
+					Namespace: migration.Namespace,
+				},
+			}
+
+			requeue, err := controller.handleRollbackRetryRequest(context.TODO(), req)
+
+			assert.NoError(t, err)
+			assert.False(t, requeue, "Phase %s should not trigger rollback", phase)
+
+			// Verify phase is unchanged
+			updatedMigration := &migrationv1alpha1.ManagedClusterMigration{}
+			err = fakeClient.Get(context.TODO(), req.NamespacedName, updatedMigration)
+			assert.NoError(t, err)
+			assert.Equal(t, phase, updatedMigration.Status.Phase, "Phase should remain unchanged for %s", phase)
+		})
+	}
+}
+
+// TestQueryAndUpdateMigrationClusterResults_NoClusters tests that the function returns error
+// when no clusters can be restored (neither from spec nor from ConfigMap)
+func TestQueryAndUpdateMigrationClusterResults_NoClusters(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = migrationv1alpha1.AddToScheme(scheme)
+
+	migration := &migrationv1alpha1.ManagedClusterMigration{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-migration-no-clusters",
+			Namespace: utils.GetDefaultNamespace(),
+			UID:       types.UID("test-uid-no-clusters"),
+		},
+		Spec: migrationv1alpha1.ManagedClusterMigrationSpec{
+			From: "source-hub",
+			To:   "target-hub",
+		},
+		Status: migrationv1alpha1.ManagedClusterMigrationStatus{
+			Phase: migrationv1alpha1.PhaseFailed,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(migration).
+		WithStatusSubresource(migration).
+		Build()
+
+	controller := &ClusterMigrationController{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	migrationID := string(migration.UID)
+
+	// Initialize migration status in memory but don't set any clusters
+	AddMigrationStatus(migrationID)
+	defer RemoveMigrationStatus(migrationID)
+
+	// Call the function - should return error because RestoreClusterList fails
+	// (no clusters in spec and no ConfigMap exists)
+	err := controller.queryAndUpdateMigrationClusterResults(context.TODO(), migration)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to restore cluster list")
 }
