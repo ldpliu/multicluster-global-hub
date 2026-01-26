@@ -600,7 +600,7 @@ func TestResetStageState(t *testing.T) {
 				SetStarted(migrationID, hub, phase)
 				SetFinished(migrationID, hub, phase)
 				SetErrorMessage(migrationID, hub, phase, "rollback failed")
-				SetClusterErrorMessage(migrationID, hub, phase, map[string]string{
+				SetClusterErrorDetailMap(migrationID, hub, phase, map[string]string{
 					"cluster1": "connection error",
 					"cluster2": "timeout",
 				})
@@ -745,7 +745,7 @@ func TestResetStageState(t *testing.T) {
 
 				SetClusterList(migrationID, []string{"cluster1", "cluster2", "cluster3"})
 				SetStarted(migrationID, hub, phase)
-				SetClusterErrorMessage(migrationID, hub, phase, map[string]string{
+				SetClusterErrorDetailMap(migrationID, hub, phase, map[string]string{
 					"cluster1": "error1",
 					"cluster2": "error2",
 				})
