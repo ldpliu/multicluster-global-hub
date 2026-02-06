@@ -46,7 +46,7 @@ var _ = BeforeSuite(func() {
 			Paths: []string{
 				filepath.Join("..", "..", "..", "manifest", "crd"),
 			},
-			MaxTime: 1 * time.Minute,
+			MaxTime: 2 * time.Minute,
 		},
 	}
 

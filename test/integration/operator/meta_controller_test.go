@@ -28,7 +28,6 @@ var _ = Describe("meta", Ordered, func() {
 
 		Expect(controllers.NewMetaController(runtimeManager,
 			kubeClient, operatorConfig, nil).SetupWithManager(runtimeManager)).To(Succeed())
-
 		// mgh
 		Expect(runtimeClient.Create(ctx, &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{

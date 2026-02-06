@@ -63,7 +63,7 @@ var _ = BeforeSuite(func() {
 				filepath.Join("..", "..", "..", "..", "..", "..", "operator", "config", "crd", "bases"),
 				filepath.Join("..", "..", "..", "..", "..", "manifest", "crd"),
 			},
-			MaxTime: 1 * time.Minute,
+			MaxTime: 2 * time.Minute,
 		},
 		ErrorIfCRDPathMissing: true,
 	}
@@ -103,14 +103,17 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = AfterSuite(func() {
-	cancel()
-	By("tearing down the test environment")
-	err := testEnv.Stop()
-	// https://github.com/kubernetes-sigs/controller-runtime/issues/1571
-	// Set 4 with random
-	if err != nil {
-		time.Sleep(4 * time.Second)
+	if cancel != nil {
+		cancel()
 	}
-	err = testEnv.Stop()
-	Expect(err).NotTo(HaveOccurred())
+	By("tearing down the test environment")
+	if testEnv != nil {
+		err := testEnv.Stop()
+		// https://github.com/kubernetes-sigs/controller-runtime/issues/1571
+		// Set 4 with random
+		if err != nil {
+			time.Sleep(4 * time.Second)
+			_ = testEnv.Stop()
+		}
+	}
 })

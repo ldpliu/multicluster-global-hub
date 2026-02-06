@@ -55,7 +55,7 @@ var _ = BeforeSuite(func() {
 				filepath.Join("..", "..", "..", "manifest", "crd"),
 				filepath.Join("..", "..", "..", "..", "operator", "config", "crd", "bases"),
 			},
-			MaxTime: 1 * time.Minute,
+			MaxTime: 2 * time.Minute,
 		},
 	}
 

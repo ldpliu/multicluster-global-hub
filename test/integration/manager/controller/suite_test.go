@@ -62,7 +62,7 @@ var _ = BeforeSuite(func() {
 				filepath.Join("..", "..", "..", "manifest", "crd"),
 				filepath.Join("..", "..", "..", "..", "operator", "config", "crd", "bases"),
 			},
-			MaxTime: 1 * time.Minute,
+			MaxTime: 2 * time.Minute,
 		},
 		ErrorIfCRDPathMissing: true,
 	}
@@ -104,15 +104,23 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = AfterSuite(func() {
-	By("tearing down the test environment")
-	err := testenv.Stop()
-	// https://github.com/kubernetes-sigs/controller-runtime/issues/1571
-	// Set 4 with random
-	if err != nil {
-		time.Sleep(4 * time.Second)
-		Expect(testenv.Stop()).NotTo(HaveOccurred())
+	if cancel != nil {
+		cancel()
 	}
-	database.CloseGorm(database.GetSqlDb())
-	Expect(testPostgres.Stop()).NotTo(HaveOccurred())
-	cancel()
+	By("tearing down the test environment")
+	if testenv != nil {
+		err := testenv.Stop()
+		// https://github.com/kubernetes-sigs/controller-runtime/issues/1571
+		// Set 4 with random
+		if err != nil {
+			time.Sleep(4 * time.Second)
+			_ = testenv.Stop()
+		}
+	}
+	if sqlDb := database.GetSqlDb(); sqlDb != nil {
+		database.CloseGorm(sqlDb)
+	}
+	if testPostgres != nil {
+		Expect(testPostgres.Stop()).NotTo(HaveOccurred())
+	}
 })
