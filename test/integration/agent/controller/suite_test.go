@@ -44,7 +44,12 @@ var _ = BeforeSuite(func() {
 	testenv = &envtest.Environment{
 		CRDInstallOptions: envtest.CRDInstallOptions{
 			Paths: []string{
-				filepath.Join("..", "..", "..", "manifest", "crd"),
+				filepath.Join("..", "..", "..", "manifest", "crd",
+					"0000_01_operator.open-cluster-management.io_clustermanagers.crd.yaml"),
+				filepath.Join("..", "..", "..", "manifest", "crd",
+					"0000_01_operator.open-cluster-management.io_multiclusterhubs.crd.yaml"),
+				filepath.Join("..", "..", "..", "manifest", "crd",
+					"0000_02_clusters.open-cluster-management.io_clusterclaims.crd.yaml"),
 			},
 			MaxTime: 1 * time.Minute,
 		},
@@ -79,12 +84,16 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = AfterSuite(func() {
-	defer cancel()
-	err := testenv.Stop()
-	// https://github.com/kubernetes-sigs/controller-runtime/issues/1571
-	// Set 4 with random
-	if err != nil {
-		time.Sleep(4 * time.Second)
-		Expect(testenv.Stop()).NotTo(HaveOccurred())
+	if cancel != nil {
+		defer cancel()
+	}
+	if testenv != nil {
+		err := testenv.Stop()
+		// https://github.com/kubernetes-sigs/controller-runtime/issues/1571
+		// Set 4 with random
+		if err != nil {
+			time.Sleep(4 * time.Second)
+			_ = testenv.Stop()
+		}
 	}
 })

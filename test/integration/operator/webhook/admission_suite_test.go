@@ -133,15 +133,21 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = AfterSuite(func() {
-	err := c.Delete(ctx, &clusterv1.ManagedCluster{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: localClusterName,
-		},
-	})
-	Expect(err).NotTo(HaveOccurred())
+	if c != nil {
+		err := c.Delete(ctx, &clusterv1.ManagedCluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: localClusterName,
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+	}
 
-	cancel()
-	Expect(testEnv.Stop()).NotTo(HaveOccurred())
+	if cancel != nil {
+		cancel()
+	}
+	if testEnv != nil {
+		Expect(testEnv.Stop()).NotTo(HaveOccurred())
+	}
 })
 
 func initializeWebhookInEnvironment() {
